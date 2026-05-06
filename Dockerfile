@@ -10,14 +10,18 @@ WORKDIR /app
 COPY package*.json ./
 COPY prisma ./prisma/
 
-# Install ALL dependencies (including devDependencies for tsc)
+# Install ALL dependencies
 RUN npm install
 
 # Copy the rest of the application code
 COPY . .
 
-# Generate Prisma Client
+# إعداد رابط قاعدة البيانات عشان يبني الجداول جواها
+ENV DATABASE_URL="file:./prisma/dev.db"
+
+# توليد كود العميل وبناء الجداول في قاعدة البيانات
 RUN npx prisma generate
+RUN npx prisma db push
 
 # Build the TypeScript project
 RUN npm run build
@@ -38,12 +42,14 @@ RUN npm install --omit=dev
 
 # Copy built files from the builder stage
 COPY --from=builder /app/dist ./dist
+# السطر ده هينسخ فولدر prisma بالكامل بما فيه ملف الداتابيز اللي اتكريت (dev.db)
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 
 # Set environment variables
 ENV NODE_ENV=production
 ENV PORT=5000
+ENV DATABASE_URL="file:./prisma/dev.db"
 
 # Expose the port
 EXPOSE 5000
