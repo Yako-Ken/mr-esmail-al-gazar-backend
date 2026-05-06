@@ -1,0 +1,206 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String   @id @default(uuid())
+  name        String
+  phone       String   @unique
+  email       String?  @unique
+  password    String
+  role        String   @default("STUDENT")
+  status      String   @default("pending")
+  isApproved  Boolean  @default(false)
+  isVerified  Boolean  @default(false)
+  permissions String   @default("[]")
+  subjectId   String?
+  parentPhone String?   // For STUDENTs: stores parent's phone for auto-linking
+  deviceId    String?   // For device-limit enforcement (max 2 accounts per device)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  vodafoneCashNumber String?
+  instapayHandle     String?
+
+  parentTeacherId String?
+  parentTeacher   User?   @relation("TeacherAssistants", fields: [parentTeacherId], references: [id])
+  assistants      User[]  @relation("TeacherAssistants")
+
+  subjects        Subject[]               @relation("TeacherSubjects")
+  courses         Course[]                @relation("TeacherCourses")
+  lessons         Lesson[]
+  studentRelations StudentParentRelation[] @relation("Student")
+  parentRelations  StudentParentRelation[] @relation("Parent")
+  trackings       Tracking[]
+  enrollments     Enrollment[]            @relation("StudentEnrollments")
+  courseEnrollments CourseEnrollment[]    @relation("StudentCourseEnrollments")
+  attendanceRecords AttendanceRecord[]    @relation("AttendanceStudent")
+  lessonProgresses  LessonProgress[]      @relation("StudentProgress")
+}
+
+model StudentParentRelation {
+  id        String   @id @default(uuid())
+  studentId String
+  parentId  String
+  student   User     @relation("Student", fields: [studentId], references: [id])
+  parent    User     @relation("Parent", fields: [parentId], references: [id])
+
+  @@unique([studentId, parentId])
+}
+
+model Subject {
+  id        String   @id @default(uuid())
+  teacherId String
+  teacher   User     @relation("TeacherSubjects", fields: [teacherId], references: [id])
+  name      String
+  code      String   @unique
+  // Legacy relation — new lessons use plain subject/grade strings
+  lessons   Lesson[]
+  enrollments Enrollment[] @relation("SubjectEnrollments")
+}
+
+model Course {
+  id           String   @id @default(uuid())
+  teacherId    String
+  teacher      User     @relation("TeacherCourses", fields: [teacherId], references: [id])
+  title        String
+  description  String?
+  subject      String?
+  grade       String?
+  price        Float    @default(0)
+  thumbnailUrl String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  lessons      Lesson[]                @relation("CourseLessons")
+  courseEnrollments CourseEnrollment[] @relation("StudentCourseEnrollments")
+  lessonProgresses  LessonProgress[]   @relation("CourseProgress")
+}
+
+model CourseEnrollment {
+  id             String   @id @default(uuid())
+  studentId      String
+  courseId       String
+  paymentMethod  String
+  receiptImageUrl String?
+  status         String   @default("PENDING")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  student  User   @relation("StudentCourseEnrollments", fields: [studentId], references: [id])
+  course   Course @relation("StudentCourseEnrollments", fields: [courseId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, courseId])
+}
+
+model Enrollment {
+  id        String   @id @default(uuid())
+  studentId String
+  student   User     @relation("StudentEnrollments", fields: [studentId], references: [id])
+  subjectId String
+  subject   Subject  @relation("SubjectEnrollments", fields: [subjectId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@unique([studentId, subjectId])
+}
+
+model Lesson {
+  id            String   @id @default(uuid())
+  // Legacy FK kept for existing rows — new rows use the plain-text fields below
+  subjectId     String?  
+  subjectRef    Subject? @relation(fields: [subjectId], references: [id])
+  // K-12 standard constants (stored as plain strings — no FK)
+  subject       String?
+  grade         String?
+  courseId      String?
+  course        Course?  @relation("CourseLessons", fields: [courseId], references: [id], onDelete: Cascade)
+  teacherId     String
+  teacher       User     @relation(fields: [teacherId], references: [id])
+  title         String
+  videoUrl      String?
+  thumbnailUrl  String?
+  pdfUrl        String?
+  description   String?
+  homeworkText  String?
+  homeworkPdfUrl String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  quizzes       Quiz[]                @relation("LessonQuizzes")
+  trackings     Tracking[]            @relation("LessonTrackings")
+  progresses    LessonProgress[]      @relation("LessonProgress")
+}
+
+model Quiz {
+  id        String   @id @default(uuid())
+  lessonId  String
+  lesson    Lesson   @relation("LessonQuizzes", fields: [lessonId], references: [id], onDelete: Cascade)
+  questions String
+}
+
+model Tracking {
+  id          String    @id @default(uuid())
+  studentId   String
+  student     User      @relation(fields: [studentId], references: [id])
+  lessonId    String
+  lesson      Lesson    @relation("LessonTrackings", fields: [lessonId], references: [id], onDelete: Cascade)
+  isPresent   Boolean   @default(false)
+  hwStatus    String    @default("NOT_SUBMITTED")
+  hwFileUrl   String?
+  quizScore   Int?
+  essayAnswers String?  // JSON string storing student's essay answers
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([studentId, lessonId])
+}
+
+model AttendanceSession {
+  id        String   @id @default(uuid())
+  date      DateTime @default(now())
+  subject   String
+  grade     String
+  ownerId   String
+  createdAt DateTime @default(now())
+  records   AttendanceRecord[]
+}
+
+model AttendanceRecord {
+  id        String            @id @default(uuid())
+  sessionId String
+  session   AttendanceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  studentId String
+  student   User              @relation("AttendanceStudent", fields: [studentId], references: [id])
+  timestamp DateTime          @default(now())
+
+  @@unique([sessionId, studentId])
+}
+
+model LessonProgress {
+  id              String   @id @default(uuid())
+  studentId       String
+  student         User     @relation("StudentProgress", fields: [studentId], references: [id], onDelete: Cascade)
+  lessonId        String
+  lesson          Lesson   @relation("LessonProgress", fields: [lessonId], references: [id], onDelete: Cascade)
+  courseId        String?
+  course          Course?  @relation("CourseProgress", fields: [courseId], references: [id], onDelete: Cascade)
+  watchPercentage Float    @default(0)
+  isCompleted     Boolean  @default(false)
+  updatedAt       DateTime @updatedAt
+  createdAt       DateTime @default(now())
+
+  @@unique([studentId, lessonId])
+}
+
+model PasswordResetOTP {
+  id           String   @id @default(uuid())
+  studentPhone String
+  otp          String
+  resetToken   String?  @unique // Used to verify the actual reset request
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  @@index([studentPhone])
+}
