@@ -147,7 +147,7 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
 });
 
 const server = app.listen(PORT, '0.0.0.0', async () => {
-  console.log(`🚀 Server running: ${NODE_ENV} | Port: ${PORT}`);
+  console.log(`🚀 Server running on http://0.0.0.0:${PORT}`);
   console.log(`📚 API: http://localhost:${PORT}/api`);
   console.log(`📁 Static files: http://localhost:${PORT}/uploads`);
   

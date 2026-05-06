@@ -1,0 +1,16 @@
+node_modules
+dist
+npm-debug.log
+.env
+.git
+.gitignore
+.Dockerfile
+Dockerfile
+.dockerignore
+README.md
+full_code.txt
+full_project_code.txt
+uploads/*
+!uploads/.gitkeep
+dev.db
+dev.db-journal
