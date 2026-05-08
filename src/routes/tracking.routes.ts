@@ -258,6 +258,12 @@ export const submitHomework: RequestHandler = async (req, res): Promise<void> =>
     const { lessonId } = req.body as { lessonId?: string };
     const files = (req as any).files as Express.Multer.File[] | undefined;
 
+    console.log('📥 submitHomework called:', {
+      lessonId,
+      files: files?.map(f => f.originalname),
+      studentId: authUser.id
+    });
+
     if (!lessonId) {
       if (files) {
         for (const f of files) {
@@ -478,7 +484,16 @@ router.post('/submit-quiz', authMiddleware, submitQuiz);
 router.post(
   '/homework/submit',
   authMiddleware,
-  homeworkUpload.array('files', 10),
+  (req, res, next) => {
+    homeworkUpload.array('files', 10)(req, res, (err) => {
+      if (err instanceof multer.MulterError) {
+        return res.status(400).json({ error: `Multer error: ${err.message}` });
+      } else if (err) {
+        return res.status(400).json({ error: err.message });
+      }
+      next();
+    });
+  },
   submitHomework,
 );
 
