@@ -346,6 +346,57 @@ export const uploadThumbnailOnly: RequestHandler = async (req, res): Promise<voi
   }
 };
 
+// ─── Standalone PDF Upload Endpoint ─────────────────────────────────
+export const uploadPdfOnly: RequestHandler = async (req, res): Promise<void> => {
+  try {
+    const authReq = req as AuthRequestWithFiles;
+    const authUser = authReq.user;
+
+    console.log('📤 uploadPdfOnly called');
+    console.log('   req.file:', req.file);
+    console.log('   req.files:', req.files);
+
+    if (!authUser) {
+      cleanupUploadedFiles(req);
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const file = req.file;
+    const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
+
+    const pdfFile = file
+      ? file
+      : (files?.pdf?.[0]);
+
+    if (!pdfFile) {
+      const fileKeys = files ? Object.keys(files) : [];
+      console.log('❌ No PDF file found. req.file:', !!req.file, 'files:', fileKeys);
+      res.status(400).json({
+        success: false,
+        message: 'No PDF file uploaded or wrong field name.',
+        debug: { hasReqFile: !!req.file, hasFiles: !!files, fileKeys: fileKeys }
+      });
+      return;
+    }
+
+    // Use getRelativePath to include subdirectory in URL (e.g., pdfs/filename.pdf)
+    const pdfUrl: string = getRelativePath(pdfFile);
+
+    console.log('✅ PDF uploaded:', pdfUrl);
+
+    res.status(200).json({
+      success: true,
+      url: `/uploads/${pdfUrl}`,
+      filename: pdfFile.filename,
+    });
+  } catch (error) {
+    console.error('PDF upload error:', error);
+    cleanupUploadedFiles(req);
+    res.status(500).json({ error: 'Failed to upload PDF' });
+  }
+};
+
 // ─── Route for standalone thumbnail upload ─────────────────────────────────
 router.post(
   '/thumbnail',
@@ -353,6 +404,15 @@ router.post(
   checkTeacherApproval,
   upload.single('thumbnail'),
   uploadThumbnailOnly
+);
+
+// ─── Route for standalone PDF upload ─────────────────────────────────
+router.post(
+  '/pdf',
+  authMiddleware,
+  checkTeacherApproval,
+  upload.single('pdf'),
+  uploadPdfOnly
 );
 
 // ─── Route for standalone video upload ──────────────────────────────────

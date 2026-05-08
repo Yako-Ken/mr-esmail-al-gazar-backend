@@ -339,7 +339,8 @@ export const createLesson: RequestHandler = async (req, res): Promise<void> => {
       homeworkText, 
       courseId, 
       quizData,
-      hasQuiz
+      hasQuiz,
+      homeworkPdfUrl
     } = req.body;
 
     const authUser = (req as Request & { user?: AuthUser }).user;
@@ -403,6 +404,8 @@ export const createLesson: RequestHandler = async (req, res): Promise<void> => {
       }
     }
 
+    const cleanHomeworkPdfUrl = homeworkPdfUrl === '' || homeworkPdfUrl === undefined ? null : (homeworkPdfUrl?.toString() || null);
+
     console.log('Parsed quizData:', parsedQuizData);
     console.log('Quiz title:', quizTitle);
     console.log('isQuizAttached:', isQuizAttached);
@@ -419,6 +422,7 @@ export const createLesson: RequestHandler = async (req, res): Promise<void> => {
           thumbnailUrl: cleanThumbnailUrl,
           pdfUrl: cleanPdfUrl,
           homeworkText: cleanHomeworkText,
+          homeworkPdfUrl: cleanHomeworkPdfUrl,
           ...(cleanCourseId ? { courseId: cleanCourseId } : {}),
           
           ...(parsedQuizData || isQuizAttached ? {

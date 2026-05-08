@@ -277,11 +277,12 @@ export const updateCourse: RequestHandler = async (req, res): Promise<void> => {
     }
 
     const { id } = req.params;
-    const { title, description, price, subject, thumbnailUrl } = req.body as {
+    const { title, description, price, subject, grade, thumbnailUrl } = req.body as {
       title?: string;
       description?: string;
       price?: string;
       subject?: string;
+      grade?: string;
       thumbnailUrl?: string;
     };
 
@@ -311,6 +312,7 @@ export const updateCourse: RequestHandler = async (req, res): Promise<void> => {
       if (!isNaN(parsed) && parsed >= 0) updateData.price = parsed;
     }
     if (subject !== undefined) updateData.subject = subject.trim();
+    if (grade !== undefined) updateData.grade = grade.trim();
     if (thumbnailUrl !== undefined) updateData.thumbnailUrl = thumbnailUrl.trim();
 
     const updated = await prisma.course.update({

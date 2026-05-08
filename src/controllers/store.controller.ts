@@ -178,6 +178,7 @@ export const getMyPurchasedCourses: RequestHandler = async (req, res): Promise<v
       title: e.course.title,
       description: e.course.description ?? null,
       subject: e.course.subject ?? null,
+      grade: e.course.grade ?? null,
       price: e.course.price,
       thumbnailUrl: formatUrl(baseUrl, e.course.thumbnailUrl),
       teacherName: e.course.teacher.name,
