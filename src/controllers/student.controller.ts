@@ -229,20 +229,26 @@ export const getTeacherStudents: RequestHandler = async (req, res): Promise<void
       ? authUser.parentTeacherId
       : authUser.id;
 
-    const enrollments = await prisma.courseEnrollment.findMany({
-      where: {
-        status: 'APPROVED',
-        course: { teacherId: ownerId },
+    // Fetch ALL students
+    const allStudents = await prisma.user.findMany({
+      where: { role: 'STUDENT' },
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        email: true,
       },
-      include: {
-        student: {
-          select: {
-            id: true,
-            name: true,
-            phone: true,
-            email: true,
-          },
-        },
+      orderBy: { name: 'asc' },
+    });
+
+    // Fetch enrollments for these students in THIS teacher's courses
+    const teacherEnrollments = await prisma.courseEnrollment.findMany({
+      where: {
+        course: { teacherId: ownerId },
+        status: 'APPROVED',
+      },
+      select: {
+        studentId: true,
         course: {
           select: {
             id: true,
@@ -250,11 +256,10 @@ export const getTeacherStudents: RequestHandler = async (req, res): Promise<void
           },
         },
       },
-      orderBy: { createdAt: 'desc' },
     });
 
-    // Get parent relations for all students
-    const studentIds = [...new Set(enrollments.map(e => e.studentId))];
+    // Get parent relations for student parent phones
+    const studentIds = allStudents.map(s => s.id);
     const parentRelations = await prisma.studentParentRelation.findMany({
       where: { studentId: { in: studentIds } },
       include: {
@@ -272,35 +277,29 @@ export const getTeacherStudents: RequestHandler = async (req, res): Promise<void
       }
     }
 
-    // Group by student
-    const studentMap = new Map<string, {
-      id: string;
-      name: string;
-      phone: string;
-      email: string | null;
-      parentPhone: string | null;
-      courses: { id: string; title: string }[];
-    }>();
-
-    for (const e of enrollments) {
-      if (!studentMap.has(e.studentId)) {
-        studentMap.set(e.studentId, {
-          id: e.studentId,
-          name: e.student.name,
-          phone: e.student.phone,
-          email: e.student.email,
-          parentPhone: parentPhoneMap.get(e.studentId) || null,
-          courses: [],
-        });
+    // Map studentId -> courses
+    const studentCoursesMap = new Map<string, { id: string; title: string }[]>();
+    for (const e of teacherEnrollments) {
+      if (!studentCoursesMap.has(e.studentId)) {
+        studentCoursesMap.set(e.studentId, []);
       }
-      studentMap.get(e.studentId)!.courses.push({
+      studentCoursesMap.get(e.studentId)!.push({
         id: e.course.id,
         title: e.course.title,
       });
     }
 
-    const result = Array.from(studentMap.values());
-    console.log('Teacher students:', { count: result.length, ownerId });
+    // Combine
+    const result = allStudents.map(s => ({
+      id: s.id,
+      name: s.name,
+      phone: s.phone,
+      email: s.email,
+      parentPhone: parentPhoneMap.get(s.id) || null,
+      courses: studentCoursesMap.get(s.id) || [],
+    }));
+
+    console.log('All students for teacher:', { total: result.length, ownerId });
     res.json(result);
   } catch (error) {
     console.error('getTeacherStudents error:', error);

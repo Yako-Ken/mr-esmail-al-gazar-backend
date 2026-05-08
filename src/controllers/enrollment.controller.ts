@@ -307,3 +307,81 @@ export const rejectPayment: RequestHandler = async (req, res): Promise<void> => 
     res.status(500).json({ error: 'Failed to reject payment' });
   }
 };
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/teachers/students/:studentId/enroll
+// Manually enrolls a student into a course (status: APPROVED)
+// ─────────────────────────────────────────────────────────────────────────────
+export const enrollStudentByTeacher: RequestHandler = async (req, res): Promise<void> => {
+  try {
+    const authUser = (req as Request & { user?: AuthUser }).user;
+    if (!authUser) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const { studentId } = req.params;
+    const { courseId } = req.body as { courseId?: string };
+
+    if (!courseId) {
+      res.status(400).json({ error: 'Course ID is required' });
+      return;
+    }
+
+    const ownerId = authUser.role === 'ASSISTANT' && authUser.parentTeacherId
+      ? authUser.parentTeacherId
+      : authUser.id;
+
+    // Verify course ownership
+    const course = await prisma.course.findFirst({
+      where: { id: courseId, teacherId: ownerId },
+    });
+
+    if (!course) {
+      res.status(403).json({ error: 'Course not found or forbidden' });
+      return;
+    }
+
+    // Check if student exists
+    const student = await prisma.user.findUnique({
+      where: { id: studentId, role: 'STUDENT' },
+    });
+
+    if (!student) {
+      res.status(404).json({ error: 'Student not found' });
+      return;
+    }
+
+    // Check if already enrolled
+    const existing = await prisma.courseEnrollment.findUnique({
+      where: { studentId_courseId: { studentId, courseId } },
+    });
+
+    if (existing) {
+      if (existing.status === 'APPROVED') {
+        res.status(400).json({ error: 'Student is already enrolled in this course' });
+        return;
+      }
+      // If PENDING or REJECTED, update to APPROVED
+      await prisma.courseEnrollment.update({
+        where: { id: existing.id },
+        data: { status: 'APPROVED' },
+      });
+    } else {
+      // Create new enrollment
+      await prisma.courseEnrollment.create({
+        data: {
+          studentId,
+          courseId,
+          status: 'APPROVED',
+          paymentMethod: 'TEACHER_MANUAL',
+        },
+      });
+    }
+
+    console.log('Student enrolled by teacher:', { studentId, courseId, by: authUser.id });
+    res.json({ message: 'Student enrolled successfully' });
+  } catch (error) {
+    console.error('enrollStudentByTeacher error:', error);
+    res.status(500).json({ error: 'Failed to enroll student' });
+  }
+};

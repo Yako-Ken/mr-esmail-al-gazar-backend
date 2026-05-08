@@ -2,7 +2,7 @@ import { Router, Request, Response, RequestHandler } from 'express';
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { authMiddleware, AuthUser } from '../middlewares/auth.middleware';
-import { getTeacherEnrollments, updateEnrollmentStatus, getPendingPayments, approvePayment, rejectPayment, getPaymentHistory } from '../controllers/enrollment.controller';
+import { getTeacherEnrollments, updateEnrollmentStatus, getPendingPayments, approvePayment, rejectPayment, getPaymentHistory, enrollStudentByTeacher } from '../controllers/enrollment.controller';
 import { getTeacherStudents, removeStudentEnrollment, getTeacherCoursesForGrading, getCourseAssignments, getCourseQuizzes, getAssignmentSubmissions, updateSubmissionStatus } from '../controllers/student.controller';
 
 const prisma = new PrismaClient();
@@ -297,6 +297,7 @@ router.post('/payments/:id/reject', authMiddleware, rejectPayment);
 
 // Student management
 router.get('/students', authMiddleware, getTeacherStudents);
+router.post('/students/:studentId/enroll', authMiddleware, enrollStudentByTeacher);
 router.post('/students/:studentId/courses/:courseId/remove', authMiddleware, removeStudentEnrollment);
 
 // Homework Correction - 3-Level Hierarchy
