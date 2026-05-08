@@ -170,20 +170,20 @@ const getPendingEssays: RequestHandler = async (req, res): Promise<void> => {
           }
         }
         
-        if (tracking.hwStatus === 'PENDING' && tracking.quizScore === null) {
+        if (tracking.essayStatus === 'PENDING') {
           // Student has submitted but NOT yet graded by teacher
           status = 'PENDING_GRADING';
           needsManualGrading = true;
           answer = essayAnswerText || '';
-        } else if (tracking.quizScore !== null && tracking.hwStatus === 'SUBMITTED') {
+        } else if (tracking.essayStatus === 'GRADED') {
           // Student has been graded (either auto-graded or manually by teacher)
           status = 'GRADED';
           needsManualGrading = false;
           answer = essayAnswerText || '';
-        } else if (tracking.quizScore !== null && tracking.hwStatus === 'PENDING') {
-          // Edge case: has score but still pending (partially graded)
-          status = 'PENDING_GRADING';
-          needsManualGrading = true;
+        } else if (tracking.quizScore !== null) {
+          // Fallback for old records without essayStatus but with a score
+          status = 'GRADED';
+          needsManualGrading = false;
           answer = essayAnswerText || '';
         } else {
           // No submission yet
@@ -223,6 +223,7 @@ const getPendingEssays: RequestHandler = async (req, res): Promise<void> => {
         essayQuestions: essayQuestions,
         hasSubmitted: tracking !== null,
         hwStatus: tracking?.hwStatus ?? 'NOT_SUBMITTED',
+        essayStatus: tracking?.essayStatus ?? 'NOT_SUBMITTED',
         submission: submission, // Explicitly null when not submitted
       };
     });
@@ -467,7 +468,8 @@ export const getLessonWithQuiz: RequestHandler = async (req, res): Promise<void>
       hasQuizScore: tracking?.quizScore !== null,
       quizScore: tracking?.quizScore ?? null,
       hwStatus: tracking?.hwStatus ?? null,
-      needsManualGrading: tracking?.hwStatus === 'PENDING',
+      essayStatus: tracking?.essayStatus ?? null,
+      needsManualGrading: tracking?.essayStatus === 'PENDING',
       tracking: tracking || null,
     });
   } catch (error) {
@@ -570,6 +572,7 @@ const gradeEssay: RequestHandler = async (req, res): Promise<void> => {
       data: {
         quizScore:    newTotalScore,
         hwStatus:     'SUBMITTED',
+        essayStatus:  'GRADED',
         essayAnswers: JSON.stringify(answersData),
       },
     });

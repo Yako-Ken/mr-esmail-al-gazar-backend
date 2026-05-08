@@ -189,15 +189,16 @@ export const submitQuiz: RequestHandler = async (req, res): Promise<void> => {
     });
 
     const hwStatus       = hasEssayQuestions ? 'PENDING' : 'SUBMITTED';
+    const essayStatus    = hasEssayQuestions ? 'PENDING' : 'GRADED';
     const score          = mcqScore; // essay scores added after teacher grades
     const answersMapJson = JSON.stringify(answersMap);
 
-    console.log(`✅ Quiz graded: mcqScore=${mcqScore}, hasEssay=${hasEssayQuestions}, hwStatus=${hwStatus}`);
+    console.log(`✅ Quiz graded: mcqScore=${mcqScore}, hasEssay=${hasEssayQuestions}, hwStatus=${hwStatus}, essayStatus=${essayStatus}`);
 
     const tracking = await prisma.tracking.upsert({
       where:  { studentId_lessonId: { studentId, lessonId } },
-      update: { quizScore: score, hwStatus, essayAnswers: answersMapJson },
-      create: { studentId, lessonId, quizScore: score, hwStatus, essayAnswers: answersMapJson },
+      update: { quizScore: score, hwStatus, essayStatus, essayAnswers: answersMapJson },
+      create: { studentId, lessonId, quizScore: score, hwStatus, essayStatus, essayAnswers: answersMapJson },
     });
 
     res.json({
@@ -609,8 +610,9 @@ export const getLessonById: RequestHandler = async (req, res): Promise<void> => 
       homeworkText: lesson.homeworkText,
       homeworkPdfUrl: formatUrl(lesson.homeworkPdfUrl),
       hasQuiz: lesson.quizzes.length > 0,
-      hasCompletedQuiz: userTracking != null && userTracking.quizScore !== null,
+      hasCompletedQuiz: userTracking != null && (userTracking.essayStatus !== 'NOT_SUBMITTED' || userTracking.quizScore !== null),
       quizScore: userTracking?.quizScore ?? null,
+      trackingId: userTracking?.id ?? null,
       createdAt: lesson.createdAt,
       teacher: lesson.teacher,
     });

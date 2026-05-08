@@ -148,6 +148,7 @@ model Tracking {
   lesson      Lesson    @relation("LessonTrackings", fields: [lessonId], references: [id], onDelete: Cascade)
   isPresent   Boolean   @default(false)
   hwStatus    String    @default("NOT_SUBMITTED")
+  essayStatus String    @default("NOT_SUBMITTED")
   hwFileUrl   String?
   quizScore   Int?
   essayAnswers String?  // JSON string storing student's essay answers
