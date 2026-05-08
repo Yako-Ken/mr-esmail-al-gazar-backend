@@ -571,7 +571,6 @@ const gradeEssay: RequestHandler = async (req, res): Promise<void> => {
       where: { id: trackingId },
       data: {
         quizScore:    newTotalScore,
-        hwStatus:     'SUBMITTED',
         essayStatus:  'GRADED',
         essayAnswers: JSON.stringify(answersData),
       },

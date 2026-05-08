@@ -518,11 +518,11 @@ export const getCourseQuizzes: RequestHandler = async (req, res): Promise<void> 
           where: { courseId, status: 'APPROVED' },
         });
 
-        // Count students who have submitted (hwStatus = PENDING) - these need manual grading
+        // Count students who have submitted (essayStatus = PENDING) - these need manual grading
         const pendingCount = await prisma.tracking.count({
           where: {
             lessonId: lesson.id,
-            hwStatus: 'PENDING',
+            essayStatus: 'PENDING',
           },
         });
 
@@ -530,8 +530,7 @@ export const getCourseQuizzes: RequestHandler = async (req, res): Promise<void> 
         const gradedCount = await prisma.tracking.count({
           where: {
             lessonId: lesson.id,
-            quizScore: { not: null },
-            hwStatus: 'SUBMITTED',
+            essayStatus: 'GRADED',
           },
         });
 

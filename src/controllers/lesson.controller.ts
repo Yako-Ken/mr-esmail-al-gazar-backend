@@ -86,8 +86,8 @@ export const submitQuiz: RequestHandler = async (req, res): Promise<void> => {
     if (answers.length === 0) {
       const tracking = await prisma.tracking.upsert({
         where: { studentId_lessonId: { studentId, lessonId } },
-        update: { quizScore: 0, hwStatus: 'SUBMITTED' },
-        create: { studentId, lessonId, quizScore: 0, hwStatus: 'SUBMITTED' },
+        update: { quizScore: 0, essayStatus: 'GRADED' },
+        create: { studentId, lessonId, quizScore: 0, essayStatus: 'GRADED' },
       });
       res.json({ score: 0, totalQuestions: 0, correctAnswers: 0, tracking });
       return;
@@ -197,8 +197,8 @@ export const submitQuiz: RequestHandler = async (req, res): Promise<void> => {
 
     const tracking = await prisma.tracking.upsert({
       where:  { studentId_lessonId: { studentId, lessonId } },
-      update: { quizScore: score, hwStatus, essayStatus, essayAnswers: answersMapJson },
-      create: { studentId, lessonId, quizScore: score, hwStatus, essayStatus, essayAnswers: answersMapJson },
+      update: { quizScore: score, essayStatus, essayAnswers: answersMapJson },
+      create: { studentId, lessonId, quizScore: score, essayStatus, essayAnswers: answersMapJson },
     });
 
     res.json({
@@ -596,6 +596,7 @@ export const getLessonById: RequestHandler = async (req, res): Promise<void> => 
       return clean.startsWith('uploads/') ? `${baseUrl}/${clean}` : `${baseUrl}/uploads/${clean}`;
     };
 
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.json({
       id: lesson.id,
       title: lesson.title,
