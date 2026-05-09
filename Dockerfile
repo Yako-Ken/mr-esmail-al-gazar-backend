@@ -22,6 +22,7 @@ ENV DATABASE_URL="file:./prisma/dev.db"
 # توليد كود العميل وبناء الجداول في قاعدة البيانات
 RUN npx prisma generate
 RUN npx prisma db push
+RUN npx prisma db seed
 
 # Build the TypeScript project
 RUN npm run build
