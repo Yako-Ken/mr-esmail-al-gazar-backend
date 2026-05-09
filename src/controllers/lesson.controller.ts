@@ -308,6 +308,8 @@ export const getLessons: RequestHandler = async (req, res): Promise<void> => {
       teacherId:     lesson.teacherId,
       courseId:      lesson.courseId,
       videoUrl:      formatUrl(lesson.videoUrl),
+      bunnyVideoId:  lesson.bunnyVideoId,
+      videoLibraryId: lesson.videoLibraryId,
       thumbnailUrl:  formatUrl(lesson.thumbnailUrl),
       pdfUrl:        formatUrl(lesson.pdfUrl),
       homeworkText:  lesson.homeworkText,
@@ -341,7 +343,9 @@ export const createLesson: RequestHandler = async (req, res): Promise<void> => {
       courseId, 
       quizData,
       hasQuiz,
-      homeworkPdfUrl
+      homeworkPdfUrl,
+      bunnyVideoId,
+      videoLibraryId
     } = req.body;
 
     const authUser = (req as Request & { user?: AuthUser }).user;
@@ -361,9 +365,9 @@ export const createLesson: RequestHandler = async (req, res): Promise<void> => {
 
     console.log('Required fields check - title:', cleanTitle, 'courseId:', cleanCourseId, 'videoUrl:', cleanVideoUrl);
 
-    if (!cleanTitle || !cleanCourseId || !cleanVideoUrl) {
-      console.error('🚨 VALIDATION FAILED: Missing required fields (title, courseId, or videoUrl)');
-      res.status(400).json({ error: 'Title, courseId, and videoUrl are required' });
+    if (!cleanTitle || !cleanCourseId || (!cleanVideoUrl && !bunnyVideoId)) {
+      console.error('🚨 VALIDATION FAILED: Missing required fields (title, courseId, or video/bunnyId)');
+      res.status(400).json({ error: 'Title, courseId, and a video source are required' });
       return;
     }
 
@@ -419,7 +423,9 @@ export const createLesson: RequestHandler = async (req, res): Promise<void> => {
           teacherId: ownerId,
           title: cleanTitle,
           description: cleanDescription,
-          videoUrl: cleanVideoUrl,
+          videoUrl: cleanVideoUrl || null,
+          bunnyVideoId: bunnyVideoId || null,
+          videoLibraryId: videoLibraryId || null,
           thumbnailUrl: cleanThumbnailUrl,
           pdfUrl: cleanPdfUrl,
           homeworkText: cleanHomeworkText,
@@ -462,7 +468,7 @@ export const createLesson: RequestHandler = async (req, res): Promise<void> => {
 export const updateLesson: RequestHandler = async (req, res): Promise<void> => {
   try {
     const { id } = req.params;
-    const { title, description, homeworkText, thumbnailUrl, videoUrl, homeworkPdfUrl } = req.body;
+    const { title, description, homeworkText, thumbnailUrl, videoUrl, homeworkPdfUrl, bunnyVideoId, videoLibraryId } = req.body;
     const authUser = (req as Request & { user?: AuthUser }).user;
     const teacherId = authUser?.id;
 
@@ -497,6 +503,8 @@ export const updateLesson: RequestHandler = async (req, res): Promise<void> => {
         homeworkText: homeworkText !== undefined ? (homeworkText || null) : existingLesson.homeworkText,
         thumbnailUrl: thumbnailUrl !== undefined ? (thumbnailUrl || null) : existingLesson.thumbnailUrl,
         videoUrl: videoUrl !== undefined ? (videoUrl || null) : existingLesson.videoUrl,
+        bunnyVideoId: bunnyVideoId !== undefined ? (bunnyVideoId || null) : existingLesson.bunnyVideoId,
+        videoLibraryId: videoLibraryId !== undefined ? (videoLibraryId || null) : existingLesson.videoLibraryId,
         homeworkPdfUrl: homeworkPdfUrl !== undefined ? (homeworkPdfUrl || null) : existingLesson.homeworkPdfUrl,
       },
     });
@@ -606,6 +614,8 @@ export const getLessonById: RequestHandler = async (req, res): Promise<void> => 
       teacherId: lesson.teacherId,
       courseId: lesson.courseId,
       videoUrl: formatUrl(lesson.videoUrl),
+      bunnyVideoId: lesson.bunnyVideoId,
+      videoLibraryId: lesson.videoLibraryId,
       thumbnailUrl: formatUrl(lesson.thumbnailUrl),
       pdfUrl: formatUrl(lesson.pdfUrl),
       homeworkText: lesson.homeworkText,

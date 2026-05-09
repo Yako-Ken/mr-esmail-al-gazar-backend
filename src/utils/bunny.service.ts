@@ -5,10 +5,46 @@ const ACCESS_KEY = process.env.BUNNY_STORAGE_ACCESS_KEY;
 const CDN_URL = process.env.BUNNY_CDN_URL;
 const REGION = process.env.BUNNY_STORAGE_REGION || 'de';
 
+// Bunny Stream Config
+const STREAM_API_KEY = process.env.BUNNY_STREAM_API_KEY;
+const STREAM_LIBRARY_ID = process.env.BUNNY_STREAM_LIBRARY_ID;
+
 // API Host based on region (Frankfurt/DE uses storage.bunnycdn.com)
 const BASE_STORAGE_URL = `https://storage.bunnycdn.com/${STORAGE_ZONE_NAME}`;
+const BASE_STREAM_URL = `https://video.bunnycdn.com/library/${STREAM_LIBRARY_ID}`;
 
 export class BunnyService {
+  /**
+   * Creates a video placeholder in Bunny Stream
+   * Returns the Video ID (GUID)
+   */
+  static async createStreamVideo(title: string): Promise<{ guid: string; libraryId: string }> {
+    try {
+      if (!STREAM_API_KEY || !STREAM_LIBRARY_ID) {
+        throw new Error('Bunny Stream credentials are not configured.');
+      }
+
+      const response = await axios.post(
+        `${BASE_STREAM_URL}/videos`,
+        { title },
+        {
+          headers: {
+            AccessKey: STREAM_API_KEY,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      return {
+        guid: response.data.guid,
+        libraryId: STREAM_LIBRARY_ID,
+      };
+    } catch (error: any) {
+      console.error('❌ Bunny Stream Create Error:', error.response?.data || error.message);
+      throw new Error(`Failed to create video in Bunny Stream: ${error.message}`);
+    }
+  }
+
   /**
    * Uploads a file buffer to Bunny.net Storage
    * @param buffer The file buffer

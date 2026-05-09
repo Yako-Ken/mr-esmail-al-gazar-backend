@@ -121,6 +121,8 @@ model Lesson {
   teacher       User     @relation(fields: [teacherId], references: [id])
   title         String
   videoUrl      String?
+  bunnyVideoId  String?  // The GUID for Bunny Stream
+  videoLibraryId String? // The Library ID for Bunny Stream
   thumbnailUrl  String?
   pdfUrl        String?
   description   String?

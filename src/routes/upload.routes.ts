@@ -71,7 +71,7 @@ export const uploadLesson: RequestHandler = async (req, res): Promise<void> => {
       ? authUser.parentTeacherId 
       : authUser.id;
 
-    const { subject, grade, title, homeworkText, description, quizData, courseId } = req.body;
+    const { subject, grade, title, homeworkText, description, quizData, courseId, bunnyVideoId, videoLibraryId } = req.body;
 
     if (!subject || !grade || !title) {
       res.status(400).json({ error: 'Subject, grade, and title are required' });
@@ -80,25 +80,30 @@ export const uploadLesson: RequestHandler = async (req, res): Promise<void> => {
 
     const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
 
-    if (!files || !files.video || !files.video[0]) {
-      res.status(400).json({ error: 'Video file is required.' });
+    // We now support either a direct video file or a Bunny Stream ID
+    let videoUrl = '';
+    
+    if (bunnyVideoId) {
+      // If using Bunny Stream, the URL will be the embed or stream URL
+      // For now we just store the ID; the client can use it to build the URL
+      console.log(`🎬 Linking Lesson to Bunny Stream Video: ${bunnyVideoId}`);
+    } else if (files?.video?.[0]) {
+      // Legacy/Direct upload to Bunny Storage
+      const videoPath = getBunnyPath(files.video[0]);
+      videoUrl = await BunnyService.uploadFile(files.video[0].buffer, videoPath);
+    } else {
+      res.status(400).json({ error: 'Video file or Bunny Video ID is required.' });
       return;
     }
 
-    // Upload to Bunny.net
-    console.log('🚀 Uploading files to Bunny.net...');
-    
-    const videoPath = getBunnyPath(files.video[0]);
-    const videoUrl = await BunnyService.uploadFile(files.video[0].buffer, videoPath);
-
     let thumbnailUrl: string | undefined;
-    if (files.thumbnail?.[0]) {
+    if (files?.thumbnail?.[0]) {
       const thumbPath = getBunnyPath(files.thumbnail[0], courseId ? 'course' : 'lesson');
       thumbnailUrl = await BunnyService.uploadFile(files.thumbnail[0].buffer, thumbPath);
     }
 
     let homeworkPdfUrl: string | undefined;
-    if (files.pdf?.[0]) {
+    if (files?.pdf?.[0]) {
       const pdfPath = getBunnyPath(files.pdf[0]);
       homeworkPdfUrl = await BunnyService.uploadFile(files.pdf[0].buffer, pdfPath);
     }
@@ -130,7 +135,9 @@ export const uploadLesson: RequestHandler = async (req, res): Promise<void> => {
         teacherId: ownerId,
         title,
         description: description || null,
-        videoUrl,
+        videoUrl: videoUrl || null,
+        bunnyVideoId: bunnyVideoId || null,
+        videoLibraryId: videoLibraryId || null,
         thumbnailUrl: thumbnailUrl ?? null,
         homeworkText: homeworkText || null,
         homeworkPdfUrl: homeworkPdfUrl ?? null,
@@ -152,11 +159,12 @@ export const uploadLesson: RequestHandler = async (req, res): Promise<void> => {
     });
 
     res.status(201).json({
-      message: 'Lesson uploaded successfully to Bunny.net',
+      message: 'Lesson created successfully',
       lesson: {
         id: lesson.id,
         title: lesson.title,
         videoUrl: lesson.videoUrl,
+        bunnyVideoId: lesson.bunnyVideoId,
         thumbnailUrl: lesson.thumbnailUrl,
         homeworkPdfUrl: lesson.homeworkPdfUrl,
         hasQuiz: !!(parsedQuestions && parsedQuestions.length > 0),
@@ -165,6 +173,30 @@ export const uploadLesson: RequestHandler = async (req, res): Promise<void> => {
   } catch (error: any) {
     console.error('Upload lesson error:', error);
     res.status(500).json({ error: error.message || 'Failed to upload lesson' });
+  }
+};
+
+// ─── Bunny Stream Ticket Endpoint (TUS Ready) ─────────────────────────────────
+export const getUploadTicket: RequestHandler = async (req, res): Promise<void> => {
+  try {
+    const { title, collectionId } = req.body;
+    if (!title) {
+      res.status(400).json({ error: 'Video title is required' });
+      return;
+    }
+
+    const { guid, libraryId } = await BunnyService.createStreamVideo(title);
+
+    res.status(200).json({
+      success: true,
+      guid,
+      libraryId,
+      collectionId: collectionId || null,
+      tusEndpoint: 'https://video.bunnycdn.com/tusupload', // Standard Bunny TUS endpoint
+      accessKey: process.env.BUNNY_STREAM_API_KEY,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
   }
 };
 
@@ -312,6 +344,7 @@ export const uploadChunk: RequestHandler = async (req, res): Promise<void> => {
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
+router.post('/video-ticket', authMiddleware, checkTeacherApproval, getUploadTicket);
 router.post('/thumbnail', authMiddleware, checkTeacherApproval, upload.single('thumbnail'), uploadThumbnailOnly);
 router.post('/pdf', authMiddleware, checkTeacherApproval, upload.single('pdf'), uploadPdfOnly);
 router.post('/video', authMiddleware, checkTeacherApproval, upload.single('video'), uploadVideoOnly);
