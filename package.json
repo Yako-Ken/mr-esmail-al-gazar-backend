@@ -5,7 +5,7 @@
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
-    "start": "prisma db push && node dist/src/server.js",
+    "start": "npx prisma generate && npx prisma db push --accept-data-loss && node dist/src/server.js",
     "dev": "ts-node src/server.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
