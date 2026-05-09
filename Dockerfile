@@ -55,5 +55,5 @@ ENV DATABASE_URL="file:./prisma/dev.db"
 # Expose the port
 EXPOSE 5000
 
-# Start the application
-CMD ["node", "dist/src/server.js"]
+# Start the application using npm start to trigger schema sync
+CMD ["npm", "start"]
