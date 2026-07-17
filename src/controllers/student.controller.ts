@@ -1,193 +1,43 @@
 import { Request, Response, RequestHandler } from 'express';
-import { PrismaClient } from '@prisma/client';
 import { AuthUser } from '../middlewares/auth.middleware';
-import { logger } from '../utils/logger';
+import { handleControllerError } from '../middlewares/errorHandler';
+import { getBaseUrl, toAbsoluteUploadUrl } from '../utils/urls';
+import * as studentService from '../services/student.service';
 
-const prisma = new PrismaClient();
-
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/students/my-dashboard
+// ─────────────────────────────────────────────────────────────────────────────
 export const getStudentDashboard = async (req: Request, res: Response): Promise<void> => {
   try {
-    const authUser = (req as Request & { user?: any }).user;
-
-    if (!authUser || authUser.role !== 'STUDENT') {
-      res.status(403).json({ error: 'Access denied. Students only.' });
-      return;
-    }
-
-    const studentId = authUser.id;
-
-    const enrollments = await prisma.enrollment.findMany({
-      where: { studentId },
-      include: {
-        subject: {
-          include: {
-            teacher: {
-              select: {
-                id: true,
-                name: true,
-              },
-            },
-            lessons: {
-              select: {
-                id: true,
-                title: true,
-                thumbnailUrl: true,
-                videoUrl: true,
-              },
-            },
-          },
-        },
-      },
-    });
-
-    let totalLessons = 0;
-    let completedLessons = 0;
-    let watchedHours = 0;
-
-    const enrolledCourses = await Promise.all(
-      enrollments.map(async (enrollment) => {
-        const subject = enrollment.subject;
-        const lessons = subject.lessons || [];
-        const subjectTotalLessons = lessons.length;
-
-        const trackingRecords = await prisma.tracking.findMany({
-          where: {
-            studentId,
-            lesson: {
-              subjectId: subject.id,
-            },
-            isPresent: true,
-          },
-        });
-
-        const completedCount = trackingRecords.length;
-        totalLessons += subjectTotalLessons;
-        completedLessons += completedCount;
-
-        const progress = subjectTotalLessons > 0 
-          ? Math.round((completedCount / subjectTotalLessons) * 100) 
-          : 0;
-
-        watchedHours += completedCount * 0.5;
-
-        return {
-          id: subject.id,
-          name: subject.name,
-          code: subject.code,
-          teacherName: subject.teacher?.name || 'Unknown',
-          totalLessons: subjectTotalLessons,
-          completedLessons: completedCount,
-          progress: progress,
-          thumbnailUrl: lessons[0]?.thumbnailUrl,
-        };
-      })
-    );
-
-    const overallProgress = totalLessons > 0 
-      ? Math.round((completedLessons / totalLessons) * 100) 
-      : 0;
-
-    res.json({
-      student: {
-        id: studentId,
-        name: authUser.name || 'Student',
-      },
-      dashboard: {
-        enrolledCourses,
-        stats: {
-          totalEnrolled: enrolledCourses.length,
-          totalLessons,
-          completedLessons,
-          overallProgress,
-          watchedHours: Math.round(watchedHours * 10) / 10,
-        },
-      },
-    });
+    const authUser = (req as Request & { user?: AuthUser }).user;
+    const result = await studentService.getStudentDashboard(authUser);
+    res.json(result);
   } catch (error) {
-    logger.error('getStudentDashboard error:', error);
-    res.status(500).json({ error: 'Failed to fetch dashboard data' });
+    handleControllerError('getStudentDashboard', error, res);
   }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/students/weekly-progress
+// ─────────────────────────────────────────────────────────────────────────────
 export const getWeeklyProgress = async (req: Request, res: Response): Promise<void> => {
   try {
-    const authUser = (req as Request & { user?: any }).user;
-
-    if (!authUser || authUser.role !== 'STUDENT') {
-      res.status(403).json({ error: 'Access denied. Students only.' });
-      return;
-    }
-
-    const studentId = authUser.id;
-
-    const now = new Date();
-    const startOfWeek = new Date(now);
-    startOfWeek.setDate(now.getDate() - now.getDay());
-    startOfWeek.setHours(0, 0, 0, 0);
-
-    const weeklyGoalHours = 10;
-
-    const weeklyTrackings = await prisma.tracking.findMany({
-      where: {
-        studentId,
-        isPresent: true,
-        createdAt: {
-          gte: startOfWeek,
-        },
-      },
-    });
-
-    const watchedHoursThisWeek = Math.round(weeklyTrackings.length * 0.5 * 10) / 10;
-    const progressPercentage = Math.min(
-      Math.round((watchedHoursThisWeek / weeklyGoalHours) * 100),
-      100
-    );
-
-    res.json({
-      watchedHours: watchedHoursThisWeek,
-      weeklyGoal: weeklyGoalHours,
-      progressPercentage,
-      remainingHours: Math.max(0, weeklyGoalHours - watchedHoursThisWeek),
-    });
+    const authUser = (req as Request & { user?: AuthUser }).user;
+    const result = await studentService.getWeeklyProgress(authUser);
+    res.json(result);
   } catch (error) {
-    logger.error('getWeeklyProgress error:', error);
-    res.status(500).json({ error: 'Failed to fetch weekly progress data' });
+    handleControllerError('getWeeklyProgress', error, res);
   }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/students/recent-lessons
+// ─────────────────────────────────────────────────────────────────────────────
 export const getRecentLessons: RequestHandler = async (req, res): Promise<void> => {
   try {
     const authUser = (req as Request & { user?: AuthUser }).user;
-    if (!authUser || authUser.role !== 'STUDENT') {
-      res.status(403).json({ error: 'Students only' });
-      return;
-    }
-
-    const studentId = authUser.id;
-
-    const enrollments = await prisma.courseEnrollment.findMany({
-      where: { studentId, status: 'APPROVED' },
-      select: { courseId: true },
-    });
-
-    const courseIds = enrollments.map((e) => e.courseId).filter((id): id is string => id !== null);
-
-    const lessons = await prisma.lesson.findMany({
-      where: { courseId: { in: courseIds } },
-      orderBy: { createdAt: 'desc' },
-      take: 10,
-      include: {
-        teacher: { select: { id: true, name: true } },
-      },
-    });
-
-    const baseUrl = `${req.protocol}://${req.get('host')}`;
-    const formatUrl = (url: string | null | undefined) => {
-      if (!url) return null;
-      if (url.startsWith('http')) return url;
-      const clean = url.startsWith('/') ? url.slice(1) : url;
-      return clean.startsWith('uploads/') ? `${baseUrl}/${clean}` : `${baseUrl}/uploads/${clean}`;
-    };
+    const lessons = await studentService.getRecentLessons(authUser);
+    const baseUrl = getBaseUrl(req);
 
     const result = lessons.map((lesson) => ({
       id: lesson.id,
@@ -197,11 +47,11 @@ export const getRecentLessons: RequestHandler = async (req, res): Promise<void> 
       grade: lesson.grade,
       teacherId: lesson.teacherId,
       courseId: lesson.courseId,
-      videoUrl: formatUrl(lesson.videoUrl),
-      thumbnailUrl: formatUrl(lesson.thumbnailUrl),
-      pdfUrl: formatUrl(lesson.pdfUrl),
+      videoUrl: toAbsoluteUploadUrl(baseUrl, lesson.videoUrl),
+      thumbnailUrl: toAbsoluteUploadUrl(baseUrl, lesson.thumbnailUrl),
+      pdfUrl: toAbsoluteUploadUrl(baseUrl, lesson.pdfUrl),
       homeworkText: lesson.homeworkText,
-      homeworkPdfUrl: formatUrl(lesson.homeworkPdfUrl),
+      homeworkPdfUrl: toAbsoluteUploadUrl(baseUrl, lesson.homeworkPdfUrl),
       hasQuiz: false, // We can populate this if we query it, but for recent lessons UI it's rarely used
       createdAt: lesson.createdAt,
       teacher: lesson.teacher,
@@ -209,8 +59,7 @@ export const getRecentLessons: RequestHandler = async (req, res): Promise<void> 
 
     res.json(result);
   } catch (error) {
-    logger.error('getRecentLessons error:', error);
-    res.status(500).json({ error: 'Failed to fetch recent lessons' });
+    handleControllerError('getRecentLessons', error, res);
   }
 };
 
@@ -226,92 +75,17 @@ export const getTeacherStudents: RequestHandler = async (req, res): Promise<void
       return;
     }
 
-    const ownerId = authUser.role === 'ASSISTANT' && authUser.parentTeacherId
-      ? authUser.parentTeacherId
-      : authUser.id;
-
-    // Fetch ALL students
-    const allStudents = await prisma.user.findMany({
-      where: { role: 'STUDENT' },
-      select: {
-        id: true,
-        name: true,
-        phone: true,
-        email: true,
-      },
-      orderBy: { name: 'asc' },
-    });
-
-    // Fetch enrollments for these students in THIS teacher's courses
-    const teacherEnrollments = await prisma.courseEnrollment.findMany({
-      where: {
-        course: { teacherId: ownerId },
-        status: 'APPROVED',
-      },
-      select: {
-        studentId: true,
-        course: {
-          select: {
-            id: true,
-            title: true,
-          },
-        },
-      },
-    });
-
-    // Get parent relations for student parent phones
-    const studentIds = allStudents.map(s => s.id);
-    const parentRelations = await prisma.studentParentRelation.findMany({
-      where: { studentId: { in: studentIds } },
-      include: {
-        parent: {
-          select: { phone: true },
-        },
-      },
-    });
-
-    // Map studentId -> parentPhone
-    const parentPhoneMap = new Map<string, string>();
-    for (const rel of parentRelations) {
-      if (rel.parent?.phone) {
-        parentPhoneMap.set(rel.studentId, rel.parent.phone);
-      }
-    }
-
-    // Map studentId -> courses
-    const studentCoursesMap = new Map<string, { id: string; title: string }[]>();
-    for (const e of teacherEnrollments) {
-      if (!studentCoursesMap.has(e.studentId)) {
-        studentCoursesMap.set(e.studentId, []);
-      }
-      studentCoursesMap.get(e.studentId)!.push({
-        id: e.course.id,
-        title: e.course.title,
-      });
-    }
-
-    // Combine
-    const result = allStudents.map(s => ({
-      id: s.id,
-      name: s.name,
-      phone: s.phone,
-      email: s.email,
-      parentPhone: parentPhoneMap.get(s.id) || null,
-      courses: studentCoursesMap.get(s.id) || [],
-    }));
-
-    logger.info('All students for teacher:', { total: result.length, ownerId });
+    const result = await studentService.getTeacherStudents(authUser);
     res.json(result);
   } catch (error) {
-    logger.error('getTeacherStudents error:', error);
-    res.status(500).json({ error: 'Failed to fetch students' });
+    handleControllerError('getTeacherStudents', error, res);
   }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/teachers/students/:studentId/courses/:courseId/remove
 // Removes a student from a specific course
-// ──────────────────────────────────────────────────────────────────────────���──
+// ─────────────────────────────────────────────────────────────────────────────
 export const removeStudentEnrollment: RequestHandler = async (req, res): Promise<void> => {
   try {
     const authUser = (req as Request & { user?: AuthUser }).user;
@@ -321,34 +95,10 @@ export const removeStudentEnrollment: RequestHandler = async (req, res): Promise
     }
 
     const { studentId, courseId } = req.params;
-    const ownerId = authUser.role === 'ASSISTANT' && authUser.parentTeacherId
-      ? authUser.parentTeacherId
-      : authUser.id;
-
-    const course = await prisma.course.findFirst({
-      where: { id: courseId, teacherId: ownerId },
-    });
-
-    if (!course) {
-      res.status(403).json({ error: 'Course not found or forbidden' });
-      return;
-    }
-
-    const enrollment = await prisma.courseEnrollment.findFirst({
-      where: { studentId, courseId },
-    });
-
-    if (!enrollment) {
-      res.status(404).json({ error: 'Enrollment not found' });
-      return;
-    }
-
-    await prisma.courseEnrollment.delete({ where: { id: enrollment.id } });
-    logger.info('Student removed from course:', { studentId, courseId, by: authUser.id });
+    await studentService.removeStudentEnrollment(authUser, studentId, courseId);
     res.json({ message: 'Student removed successfully' });
   } catch (error) {
-    logger.error('removeStudentEnrollment error:', error);
-    res.status(500).json({ error: 'Failed to remove student' });
+    handleControllerError('removeStudentEnrollment', error, res);
   }
 };
 
@@ -363,34 +113,10 @@ export const getTeacherCoursesForGrading: RequestHandler = async (req, res): Pro
       return;
     }
 
-    const ownerId = authUser.role === 'ASSISTANT' && authUser.parentTeacherId
-      ? authUser.parentTeacherId
-      : authUser.id;
-
-    const courses = await prisma.course.findMany({
-      where: { teacherId: ownerId },
-      select: {
-        id: true,
-        title: true,
-        thumbnailUrl: true,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    // Get student count per course
-    const coursesWithCount = await Promise.all(
-      courses.map(async (course) => {
-        const count = await prisma.courseEnrollment.count({
-          where: { courseId: course.id, status: 'APPROVED' },
-        });
-        return { ...course, studentsCount: count };
-      })
-    );
-
-    res.json(coursesWithCount);
+    const result = await studentService.getTeacherCoursesForGrading(authUser);
+    res.json(result);
   } catch (error) {
-    logger.error('getTeacherCoursesForGrading error:', error);
-    res.status(500).json({ error: 'Failed to fetch courses' });
+    handleControllerError('getTeacherCoursesForGrading', error, res);
   }
 };
 
@@ -407,64 +133,10 @@ export const getCourseAssignments: RequestHandler = async (req, res): Promise<vo
     }
 
     const { courseId } = req.params;
-    const ownerId = authUser.role === 'ASSISTANT' && authUser.parentTeacherId
-      ? authUser.parentTeacherId
-      : authUser.id;
-
-    // Verify course ownership
-    const course = await prisma.course.findFirst({
-      where: { id: courseId, teacherId: ownerId },
-    });
-
-    if (!course) {
-      res.status(403).json({ error: 'Course not found or forbidden' });
-      return;
-    }
-
-    // Get lessons (assignments) for this course
-    const lessons = await prisma.lesson.findMany({
-      where: { courseId },
-      select: {
-        id: true,
-        title: true,
-        description: true,
-        homeworkText: true,
-        createdAt: true,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    // Get submission counts per lesson
-    const assignments = await Promise.all(
-      lessons.map(async (lesson) => {
-        // Count all enrolled students for this course
-        const totalCount = await prisma.courseEnrollment.count({
-          where: { courseId, status: 'APPROVED' },
-        });
-
-        // Count students who submitted homework for this lesson (via tracking hwStatus)
-        const submittedCount = await prisma.tracking.count({
-          where: {
-            lessonId: lesson.id,
-            hwStatus: { not: 'NOT_SUBMITTED' },
-          },
-        });
-
-        return {
-          id: lesson.id,
-          title: lesson.title,
-          description: lesson.description,
-          dueDate: lesson.createdAt,
-          totalCount,
-          submittedCount,
-        };
-      })
-    );
-
+    const assignments = await studentService.getCourseAssignments(authUser, courseId);
     res.json(assignments);
   } catch (error) {
-    logger.error('getCourseAssignments error:', error);
-    res.status(500).json({ error: 'Failed to fetch assignments' });
+    handleControllerError('getCourseAssignments', error, res);
   }
 };
 
@@ -481,74 +153,10 @@ export const getCourseQuizzes: RequestHandler = async (req, res): Promise<void> 
     }
 
     const { courseId } = req.params;
-    const ownerId = authUser.role === 'ASSISTANT' && authUser.parentTeacherId
-      ? authUser.parentTeacherId
-      : authUser.id;
-
-    const course = await prisma.course.findFirst({
-      where: { id: courseId, teacherId: ownerId },
-    });
-
-    if (!course) {
-      res.status(403).json({ error: 'Course not found or forbidden' });
-      return;
-    }
-
-    // Get lessons with quizzes for this course (via quizzes relation)
-    const lessons = await prisma.lesson.findMany({
-      where: { courseId },
-      include: {
-        quizzes: {
-          select: {
-            id: true,
-            questions: true,
-          },
-        },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    // Filter only lessons that have quizzes
-    const lessonsWithQuizzes = lessons.filter(l => l.quizzes && l.quizzes.length > 0);
-
-    // Get submission counts per quiz
-    const quizzes = await Promise.all(
-      lessonsWithQuizzes.map(async (lesson) => {
-        // Get total enrolled students for this course
-        const totalEnrolled = await prisma.courseEnrollment.count({
-          where: { courseId, status: 'APPROVED' },
-        });
-
-        // Count students who have submitted (essayStatus = PENDING) - these need manual grading
-        const pendingCount = await prisma.tracking.count({
-          where: {
-            lessonId: lesson.id,
-            essayStatus: 'PENDING',
-          },
-        });
-
-        // Count students who have a quiz score (graded)
-        const gradedCount = await prisma.tracking.count({
-          where: {
-            lessonId: lesson.id,
-            essayStatus: 'GRADED',
-          },
-        });
-
-        return {
-          id: lesson.quizzes[0].id,
-          title: lesson.title,
-          pendingCount: pendingCount,
-          totalEnrolled: totalEnrolled,
-          gradedCount: gradedCount,
-        };
-      })
-    );
-
+    const quizzes = await studentService.getCourseQuizzes(authUser, courseId);
     res.json(quizzes);
   } catch (error) {
-    logger.error('getCourseQuizzes error:', error);
-    res.status(500).json({ error: 'Failed to fetch quizzes' });
+    handleControllerError('getCourseQuizzes', error, res);
   }
 };
 
@@ -565,81 +173,25 @@ export const getAssignmentSubmissions: RequestHandler = async (req, res): Promis
     }
 
     const { assignmentId } = req.params;
+    const submissions = await studentService.getAssignmentSubmissions(authUser, assignmentId);
+    const baseUrl = getBaseUrl(req);
 
-    const lesson = await prisma.lesson.findUnique({
-      where: { id: assignmentId },
-      include: { course: true },
-    });
+    // Build absolute URL for the homework file(s) if they exist. hwFileUrl can
+    // contain multiple comma-separated relative paths.
+    const result = submissions.map((s) => ({
+      ...s,
+      hwFileUrl: s.hwFileUrl
+        ? s.hwFileUrl.split(',').map((url) => {
+            const trimmed = url.trim();
+            if (!trimmed) return '';
+            return trimmed.startsWith('http') ? trimmed : `${baseUrl}/${trimmed}`;
+          }).filter((u) => u).join(',')
+        : null,
+    }));
 
-    if (!lesson || !lesson.course) {
-      res.status(403).json({ error: 'Assignment not found or forbidden' });
-      return;
-    }
-    
-    // Support both TEACHER and ASSISTANT roles
-    // For assistants, check if they're linked to the course's teacher
-    let isAuthorized = lesson.course.teacherId === authUser.id;
-    if (authUser.role === 'ASSISTANT' && authUser.parentTeacherId) {
-      // Assistant can access if they're linked to the course owner
-      isAuthorized = lesson.course.teacherId === authUser.parentTeacherId;
-    }
-    
-    if (!isAuthorized) {
-      res.status(403).json({ error: 'Assignment not found or forbidden' });
-      return;
-    }
-
-    const courseId = lesson.courseId;
-
-    // Get all enrolled students for the course
-    const enrollments = await prisma.courseEnrollment.findMany({
-      where: { courseId: courseId || '', status: 'APPROVED' },
-      include: {
-        student: {
-          select: { id: true, name: true, phone: true },
-        },
-      },
-    });
-
-    const baseUrl = `${req.protocol}://${req.get('host')}`;
-    const submissions = await Promise.all(
-      enrollments.map(async (enrollment) => {
-        const tracking = await prisma.tracking.findUnique({
-          where: { studentId_lessonId: { studentId: enrollment.studentId, lessonId: assignmentId } },
-        });
-
-        const student = (enrollment as any).student;
-        const hasSubmission = tracking && tracking.hwStatus !== 'NOT_SUBMITTED';
-
-        // Build absolute URL for the homework file(s) if they exist
-        const hwFileUrl = tracking?.hwFileUrl
-          ? tracking.hwFileUrl.split(',').map(url => {
-              const trimmed = url.trim();
-              if (!trimmed) return '';
-              return trimmed.startsWith('http') ? trimmed : `${baseUrl}/${trimmed}`;
-            }).filter(u => u).join(',')
-          : null;
-        
-        return {
-          id: tracking?.id || '',
-          studentId: student.id,
-          studentName: student.name,
-          studentPhone: student.phone,
-          submissionText: hasSubmission ? 'تم التسليم' : '',
-          status: tracking?.hwStatus || 'NOT_SUBMITTED',
-          submittedAt: tracking?.createdAt,
-          score: tracking?.quizScore,
-          hwFileUrl,          // ← file the student uploaded (PENDING review)
-        };
-      })
-    );
-
-    logger.info(`📡 Submissions for ${assignmentId}:`, submissions.map(s => ({ n: s.studentName, st: s.status, hasF: !!s.hwFileUrl })));
-
-    res.json(submissions);
+    res.json(result);
   } catch (error) {
-    logger.error('getAssignmentSubmissions error:', error);
-    res.status(500).json({ error: 'Failed to fetch submissions' });
+    handleControllerError('getAssignmentSubmissions', error, res);
   }
 };
 
@@ -658,64 +210,9 @@ export const updateSubmissionStatus: RequestHandler = async (req, res): Promise<
     const { assignmentId } = req.params;
     const { status, studentId } = req.body as { status?: string; studentId?: string };
 
-    if (!status || !['APPROVED', 'REJECTED'].includes(status)) {
-      res.status(400).json({ error: 'Invalid status. Must be APPROVED or REJECTED.' });
-      return;
-    }
-
-    if (!studentId) {
-      res.status(400).json({ error: 'studentId is required' });
-      return;
-    }
-
-    const lesson = await prisma.lesson.findUnique({
-      where: { id: assignmentId },
-      include: { course: true },
-    });
-
-    if (!lesson || !lesson.course) {
-      res.status(403).json({ error: 'Assignment not found or forbidden' });
-      return;
-    }
-    
-    // Support both TEACHER and ASSISTANT roles
-    let isAuthorized = lesson.course.teacherId === authUser.id;
-    if (authUser.role === 'ASSISTANT' && authUser.parentTeacherId) {
-      isAuthorized = lesson.course.teacherId === authUser.parentTeacherId;
-    }
-    
-    if (!isAuthorized) {
-      res.status(403).json({ error: 'Assignment not found or forbidden' });
-      return;
-    }
-
-    // Find or create tracking record
-    let tracking = await prisma.tracking.findUnique({
-      where: { studentId_lessonId: { studentId, lessonId: assignmentId } },
-    });
-
-    if (!tracking) {
-      // Create tracking if doesn't exist
-      tracking = await prisma.tracking.create({
-        data: {
-          studentId,
-          lessonId: assignmentId,
-          isPresent: true,
-          hwStatus: status,
-        },
-      });
-    } else {
-      // Update existing tracking
-      tracking = await prisma.tracking.update({
-        where: { id: tracking.id },
-        data: { hwStatus: status },
-      });
-    }
-
-    logger.info('Submission status updated:', { assignmentId, studentId, status, by: authUser.id });
+    const tracking = await studentService.updateSubmissionStatus(authUser, assignmentId, status, studentId);
     res.json({ message: `Submission ${status} successfully`, status: tracking.hwStatus });
   } catch (error) {
-    logger.error('updateSubmissionStatus error:', error);
-    res.status(500).json({ error: 'Failed to update submission status' });
+    handleControllerError('updateSubmissionStatus', error, res);
   }
 };

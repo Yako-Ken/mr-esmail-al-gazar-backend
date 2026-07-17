@@ -1,17 +1,7 @@
-import { Router, Request, Response, RequestHandler } from 'express';
-import { PrismaClient } from '@prisma/client';
-import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
-import { authMiddleware, AuthUser } from '../middlewares/auth.middleware';
-import { getIO } from '../socket';
-import { logger } from '../utils/logger';
-import { env } from '../utils/env';
-
-const router = Router();
-const prisma = new PrismaClient();
-
-const JWT_SECRET = env.JWT_SECRET;
-const SUPER_ADMIN_ID = 'admin_001';
+import { Request, RequestHandler } from 'express';
+import { AuthUser } from '../middlewares/auth.middleware';
+import { handleControllerError } from '../middlewares/errorHandler';
+import * as adminService from '../services/admin.service';
 
 /**
  * Factory function: returns a route handler that fetches users by role.
@@ -20,90 +10,39 @@ const SUPER_ADMIN_ID = 'admin_001';
 export const getUsersByRole = (role: string): RequestHandler =>
   async (req, res): Promise<void> => {
     try {
-      const users = await prisma.user.findMany({
-        where: { role: role.toUpperCase() },
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          phone: true,
-          role: true,
-          status: true,
-          isApproved: true,
-          isVerified: true,
-          subjectId: true,
-          createdAt: true,
-        },
-        orderBy: { createdAt: 'desc' },
-      });
-
-      logger.info(`[GET /admin/${role.toLowerCase()}s] Found ${users.length} users`);
+      const users = await adminService.listUsersByRole(role);
       res.json({ data: users, total: users.length });
     } catch (error) {
-      logger.error(`getUsersByRole(${role}) error:`, error);
-      res.status(500).json({ error: `Failed to fetch ${role.toLowerCase()}s` });
+      handleControllerError(`getUsersByRole(${role})`, error, res);
     }
   };
 
 export const getSubjects: RequestHandler = async (req, res): Promise<void> => {
   try {
-    const subjects = await prisma.subject.findMany({
-      select: {
-        id: true,
-        teacherId: true,
-        name: true,
-        code: true,
-      },
-      orderBy: { name: 'asc' },
-    });
+    const subjects = await adminService.listSubjects();
 
-    logger.info(`[GET /subjects] Found ${subjects.length} subjects`);
-    
     if (subjects.length === 0) {
       res.json({ message: 'No subjects found in database', data: [] });
     } else {
       res.json(subjects);
     }
   } catch (error) {
-    logger.error('Get subjects error:', error);
-    res.status(500).json({ error: 'Failed to fetch subjects' });
+    handleControllerError('getSubjects', error, res);
   }
 };
 
 export const getAllUsers: RequestHandler = async (req, res): Promise<void> => {
   try {
     const { role, page = '1', limit = '20' } = req.query;
-    const queryOptions: any = {};
-
-    if (role && typeof role === 'string') {
-      queryOptions.role = role.toUpperCase();
-    }
 
     const pageNumber = parseInt(page as string, 10);
     const limitNumber = parseInt(limit as string, 10);
-    const skip = (pageNumber - 1) * limitNumber;
 
-    const [users, totalCount] = await Promise.all([
-      prisma.user.findMany({
-        where: queryOptions,
-        skip,
-        take: limitNumber,
-        select: {
-          id: true,
-          name: true,
-          phone: true,
-          role: true,
-          status: true,
-          isApproved: true,
-          isVerified: true,
-          subjectId: true,
-          permissions: true,
-          createdAt: true,
-        },
-        orderBy: { createdAt: 'desc' },
-      }),
-      prisma.user.count({ where: queryOptions }),
-    ]);
+    const { users, totalCount } = await adminService.listAllUsers({
+      role: role && typeof role === 'string' ? role : undefined,
+      page: pageNumber,
+      limit: limitNumber,
+    });
 
     res.json({
       data: users,
@@ -115,223 +54,47 @@ export const getAllUsers: RequestHandler = async (req, res): Promise<void> => {
       },
     });
   } catch (error) {
-    logger.error('getAllUsers error:', error);
-    res.status(500).json({ error: 'Failed to fetch users' });
+    handleControllerError('getAllUsers', error, res);
   }
 };
 
 export const login: RequestHandler = async (req, res): Promise<void> => {
   try {
     const { phone, password } = req.body;
-
-    logger.info('🔐 Login attempt for phone:', phone);
-
-    if (!phone || !password) {
-      logger.info('❌ Login failed: Missing phone or password');
-      res.status(400).json({ error: 'Phone and password are required' });
-      return;
-    }
-
-    // Super Admin Master Key Bypass - works even during DB maintenance.
-    // Credentials live only in env (SUPER_ADMIN_PHONE / SUPER_ADMIN_PASSWORD_HASH), never in source.
-    if (env.SUPER_ADMIN_PHONE && env.SUPER_ADMIN_PASSWORD_HASH && phone === env.SUPER_ADMIN_PHONE) {
-      const bypassValid = await bcrypt.compare(password, env.SUPER_ADMIN_PASSWORD_HASH);
-      if (bypassValid) {
-        logger.info('✅ Super Admin bypass login successful!');
-
-        const token = jwt.sign(
-          { id: SUPER_ADMIN_ID, phone: env.SUPER_ADMIN_PHONE, role: 'SUPER_ADMIN' },
-          JWT_SECRET,
-          { expiresIn: '7d' }
-        );
-
-        res.json({
-          token,
-          user: {
-            id: SUPER_ADMIN_ID,
-            name: 'Super Admin',
-            phone: env.SUPER_ADMIN_PHONE,
-            role: 'SUPER_ADMIN',
-            isApproved: true,
-            isVerified: true,
-          },
-        });
-        return;
-      }
-    }
-
-    // Standard user login with bcrypt comparison
-    logger.info('👤 Attempting database lookup for:', phone);
-    const user = await prisma.user.findUnique({
-      where: { phone },
-    });
-
-    if (!user) {
-      logger.info('❌ Login failed: User not found in database');
-      res.status(404).json({ error: 'User not found' });
-      return;
-    }
-
-    logger.info('✅ User found in database:', { id: user.id, role: user.role });
-
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-
-    if (!isPasswordValid) {
-      logger.info('❌ Login failed: Invalid password');
-      res.status(401).json({ error: 'Invalid credentials' });
-      return;
-    }
-
-    logger.info('✅ Password validated successfully');
-
-    if (!user.isApproved) {
-      logger.info('❌ Login failed: User not approved');
-      res.status(403).json({ error: 'Account not approved. Please contact the administrator.' });
-      return;
-    }
-
-    logger.info('✅ User approved, generating JWT...');
-
-    const token = jwt.sign(
-      { id: user.id, phone: user.phone, role: user.role },
-      JWT_SECRET,
-      { expiresIn: '7d' }
-    );
-
-    logger.info('✅ JWT generated successfully with role:', user.role);
-
-    const responseUser: Record<string, unknown> = {
-      id: user.id,
-      name: user.name,
-      phone: user.phone,
-      role: user.role,
-      isApproved: user.isApproved,
-      isVerified: user.isVerified,
-    };
-
-    // Include subjectId for teachers
-    if (user.role === 'TEACHER' && user.subjectId) {
-      responseUser.subjectId = user.subjectId;
-    }
-
-    res.json({
-      token,
-      user: responseUser,
-    });
+    const result = await adminService.login(phone, password);
+    res.json(result);
   } catch (error) {
-    logger.error('❌ Login error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    handleControllerError('login', error, res);
   }
 };
 
 export const deleteUser: RequestHandler = async (req, res): Promise<void> => {
   try {
     const authUser = (req as Request & { user?: AuthUser }).user;
-    
     if (!authUser) {
       res.status(401).json({ error: 'Unauthorized' });
       return;
     }
 
-    const currentUser = await prisma.user.findUnique({
-      where: { id: authUser.id },
-    });
-
-    if (!currentUser || currentUser.role !== 'SUPER_ADMIN') {
-      res.status(403).json({ error: 'Only Super Admin can delete users' });
-      return;
-    }
-
     const { userId } = req.params;
-
-    if (userId === currentUser.id) {
-      res.status(400).json({ error: 'Cannot delete your own account' });
-      return;
-    }
-
-    const userToDelete = await prisma.user.findUnique({
-      where: { id: userId },
-    });
-
-    if (!userToDelete) {
-      res.status(404).json({ error: 'User not found' });
-      return;
-    }
-
-    if (userToDelete.role === 'SUPER_ADMIN') {
-      res.status(403).json({ error: 'Cannot delete another Super Admin' });
-      return;
-    }
-
-    await prisma.tracking.deleteMany({
-      where: { studentId: userId },
-    });
-
-    await prisma.courseEnrollment.deleteMany({
-      where: { studentId: userId },
-    });
-
-    await prisma.quiz.deleteMany({
-      where: { lesson: { teacherId: userId } },
-    });
-
-    await prisma.lesson.deleteMany({
-      where: { teacherId: userId },
-    });
-
-    await prisma.subject.deleteMany({
-      where: { teacherId: userId },
-    });
-
-    await prisma.studentParentRelation.deleteMany({
-      where: { OR: [{ studentId: userId }, { parentId: userId }] },
-    });
-
-    await prisma.user.delete({
-      where: { id: userId },
-    });
-
+    await adminService.deleteUserById(authUser.id, userId);
     res.json({ message: 'User deleted successfully' });
   } catch (error) {
-    logger.error('Delete user error:', error);
-    res.status(500).json({ error: 'Failed to delete user' });
+    handleControllerError('deleteUser', error, res);
   }
 };
 
 export const verifyTeacher: RequestHandler = async (req, res): Promise<void> => {
   try {
     const authUser = (req as Request & { user?: AuthUser }).user;
-    
     if (!authUser) {
       res.status(401).json({ error: 'Unauthorized' });
       return;
     }
 
-    const currentUser = await prisma.user.findUnique({
-      where: { id: authUser.id },
-    });
-
-    if (!currentUser || currentUser.role !== 'SUPER_ADMIN') {
-      res.status(403).json({ error: 'Only Super Admin can verify teachers' });
-      return;
-    }
-
     const { userId } = req.params;
     const { isVerified } = req.body;
-
-    const teacher = await prisma.user.findUnique({
-      where: { id: userId },
-    });
-
-    if (!teacher || teacher.role !== 'TEACHER') {
-      res.status(404).json({ error: 'Teacher not found' });
-      return;
-    }
-
-    const updatedTeacher = await prisma.user.update({
-      where: { id: userId },
-      data: { isVerified: isVerified === true },
-    });
+    const updatedTeacher = await adminService.verifyTeacher(authUser.id, userId, isVerified);
 
     res.json({
       message: isVerified ? 'Teacher verified successfully' : 'Teacher verification revoked',
@@ -343,57 +106,21 @@ export const verifyTeacher: RequestHandler = async (req, res): Promise<void> => 
       },
     });
   } catch (error) {
-    logger.error('Verify teacher error:', error);
-    res.status(500).json({ error: 'Failed to verify teacher' });
+    handleControllerError('verifyTeacher', error, res);
   }
 };
 
 export const updateUserPermissions: RequestHandler = async (req, res): Promise<void> => {
   try {
     const authUser = (req as Request & { user?: AuthUser }).user;
-    
     if (!authUser) {
       res.status(401).json({ error: 'Unauthorized' });
       return;
     }
 
-    const currentUser = await prisma.user.findUnique({
-      where: { id: authUser.id },
-    });
-
-    if (!currentUser || currentUser.role !== 'SUPER_ADMIN') {
-      res.status(403).json({ error: 'Only Super Admin can update user permissions' });
-      return;
-    }
-
     const { userId } = req.params;
     const { permissions, subjectId } = req.body;
-
-    const targetUser = await prisma.user.findUnique({
-      where: { id: userId },
-    });
-
-    if (!targetUser) {
-      res.status(404).json({ error: 'User not found' });
-      return;
-    }
-
-    if (targetUser.role === 'SUPER_ADMIN') {
-      res.status(403).json({ error: 'Cannot modify Super Admin permissions' });
-      return;
-    }
-
-    const permissionsJson = Array.isArray(permissions) 
-      ? JSON.stringify(permissions) 
-      : '[]';
-
-    const updatedUser = await prisma.user.update({
-      where: { id: userId },
-      data: {
-        permissions: permissionsJson,
-        subjectId: subjectId || null,
-      },
-    });
+    const updatedUser = await adminService.updateUserPermissions(authUser.id, userId, permissions, subjectId);
 
     res.json({
       message: 'Permissions updated successfully',
@@ -407,31 +134,14 @@ export const updateUserPermissions: RequestHandler = async (req, res): Promise<v
       },
     });
   } catch (error) {
-    logger.error('Update permissions error:', error);
-    res.status(500).json({ error: 'Failed to update permissions' });
+    handleControllerError('updateUserPermissions', error, res);
   }
 };
 
 export const getUserPermissions: RequestHandler = async (req, res): Promise<void> => {
   try {
     const { userId } = req.params;
-
-    const targetUser = await prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        id: true,
-        name: true,
-        phone: true,
-        role: true,
-        permissions: true,
-        subjectId: true,
-      },
-    });
-
-    if (!targetUser) {
-      res.status(404).json({ error: 'User not found' });
-      return;
-    }
+    const targetUser = await adminService.getUserPermissions(userId);
 
     res.json({
       user: {
@@ -444,50 +154,25 @@ export const getUserPermissions: RequestHandler = async (req, res): Promise<void
       },
     });
   } catch (error) {
-    logger.error('Get permissions error:', error);
-    res.status(500).json({ error: 'Failed to get permissions' });
+    handleControllerError('getUserPermissions', error, res);
   }
 };
 
 export const getDashboardStats: RequestHandler = async (req, res): Promise<void> => {
   try {
-    const coursesCount = await prisma.course.count();
-    const parentsCount = await prisma.user.count({ where: { role: 'PARENT' } });
-    const studentsCount = await prisma.user.count({ where: { role: 'STUDENT' } });
-    const teachersCount = await prisma.user.count({ where: { role: 'TEACHER' } });
-
-    res.json({
-      courses: coursesCount,
-      parents: parentsCount,
-      students: studentsCount,
-      teachers: teachersCount,
-    });
+    const stats = await adminService.getDashboardStats();
+    res.json(stats);
   } catch (error) {
-    logger.error('getDashboardStats error:', error);
-    res.status(500).json({ error: 'Failed to fetch dashboard stats' });
+    handleControllerError('getDashboardStats', error, res);
   }
 };
 
 export const getPendingTeachers: RequestHandler = async (req, res): Promise<void> => {
   try {
-    const pendingTeachers = await prisma.user.findMany({
-      where: { role: 'TEACHER', status: 'pending' },
-      select: {
-        id: true,
-        name: true,
-        phone: true,
-        email: true,
-        role: true,
-        status: true,
-        createdAt: true,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-
+    const pendingTeachers = await adminService.listPendingTeachers();
     res.json({ data: pendingTeachers, total: pendingTeachers.length });
   } catch (error) {
-    logger.error('getPendingTeachers error:', error);
-    res.status(500).json({ error: 'Failed to fetch pending teachers' });
+    handleControllerError('getPendingTeachers', error, res);
   }
 };
 
@@ -495,124 +180,29 @@ export const approveTeacher: RequestHandler = async (req, res): Promise<void> =>
   try {
     const { id } = req.params;
     const { status } = req.body;
-
-    if (!['approved', 'rejected', 'banned'].includes(status)) {
-      res.status(400).json({ error: 'Invalid status. Must be approved, rejected, or banned' });
-      return;
-    }
-
-    const updatedUser = await prisma.user.update({
-      where: { id },
-      data: {
-        status,
-        isApproved: status === 'approved',
-      },
-      select: {
-        id: true,
-        name: true,
-        phone: true,
-        role: true,
-        status: true,
-        isApproved: true,
-      }
-    });
-
-    const io = getIO();
-    if (io) {
-      io.to(`user_${id}`).emit('teacher_status_update', {
-        teacherId: id,
-        status: updatedUser.status,
-        message: status === 'approved' 
-          ? 'Your account has been approved!' 
-          : status === 'rejected'
-          ? 'Your account application was rejected.'
-          : 'Your account has been banned.'
-      });
-    }
-
+    const updatedUser = await adminService.approveTeacher(id, status);
     res.json({ message: `Teacher ${status} successfully`, user: updatedUser });
   } catch (error) {
-    logger.error('approveTeacher error:', error);
-    res.status(500).json({ error: 'Failed to update teacher approval status' });
+    handleControllerError('approveTeacher', error, res);
   }
 };
 
 export const getStudentById: RequestHandler = async (req, res): Promise<void> => {
   try {
     const { id } = req.params;
-    
-    const student = await prisma.user.findUnique({
-      where: { id },
-      include: {
-        studentRelations: {
-          include: {
-            parent: { select: { name: true, phone: true } },
-          },
-        },
-        courseEnrollments: {
-          include: {
-            course: {
-              include: {
-                teacher: { select: { name: true } },
-              },
-            },
-          },
-        },
-      },
-    });
-
-    if (!student || student.role !== 'STUDENT') {
-      res.status(404).json({ error: 'Student not found' });
-      return;
-    }
-
+    const student = await adminService.getStudentById(id);
     res.json({ data: student });
   } catch (error) {
-    logger.error('getStudentById error:', error);
-    res.status(500).json({ error: 'Failed to fetch student details' });
+    handleControllerError('getStudentById', error, res);
   }
 };
 
 export const getTeacherById: RequestHandler = async (req, res): Promise<void> => {
   try {
     const { id } = req.params;
-    
-    const teacher = await prisma.user.findUnique({
-      where: { id },
-      include: {
-        lessons: {
-          orderBy: { createdAt: 'desc' },
-          take: 5,
-          select: {
-            id: true,
-            title: true,
-            subject: true,
-            grade: true,
-            createdAt: true,
-          },
-        },
-        courses: {
-          orderBy: { createdAt: 'desc' },
-          take: 5,
-          select: {
-            id: true,
-            title: true,
-            createdAt: true,
-          },
-        },
-      },
-    });
-
-    if (!teacher || teacher.role !== 'TEACHER') {
-      res.status(404).json({ error: 'Teacher not found' });
-      return;
-    }
-
+    const teacher = await adminService.getTeacherById(id);
     res.json({ data: teacher });
   } catch (error) {
-    logger.error('getTeacherById error:', error);
-    res.status(500).json({ error: 'Failed to fetch teacher details' });
+    handleControllerError('getTeacherById', error, res);
   }
 };
-
-export default router;
