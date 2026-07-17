@@ -2,6 +2,8 @@ import { Request, Response, NextFunction, RequestHandler } from 'express';
 import jwt from 'jsonwebtoken';
 import { PrismaClient } from '@prisma/client';
 import { isBlacklisted } from '../controllers/logout.controller';
+import { logger } from '../utils/logger';
+import { env } from '../utils/env';
 
 const prisma = new PrismaClient();
 
@@ -64,16 +66,16 @@ export const authMiddleware: RequestHandler = async (
       return;
     }
 
-    // DEBUG: Log first 20 chars so malformed / quoted tokens are immediately visible
-    console.log('DEBUG: Verifying token ->', token.substring(0, 20) + '...');
+    // Dev-only trace: never reaches production logs (logger.debug is a no-op when NODE_ENV=production)
+    logger.debug('Verifying token ->', token.substring(0, 20) + '...');
 
     let decoded: jwt.JwtPayload;
     try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET!) as jwt.JwtPayload;
-      console.log('🔑 Token verified successfully for user:', decoded.phone, 'role:', decoded.role);
+      decoded = jwt.verify(token, env.JWT_SECRET) as jwt.JwtPayload;
+      logger.debug('Token verified for user:', decoded.phone, 'role:', decoded.role);
     } catch (jwtError) {
       const errorMessage = jwtError instanceof Error ? jwtError.message : String(jwtError);
-      console.log('❌ Token verification failed:', errorMessage);
+      logger.debug('Token verification failed:', errorMessage);
       if (jwtError instanceof jwt.TokenExpiredError) {
         res.status(401).json({ error: 'Token expired' });
         return;
@@ -116,7 +118,7 @@ export const authMiddleware: RequestHandler = async (
 
     next();
   } catch (error) {
-    console.error('Auth middleware error:', error);
+    logger.error('Auth middleware error:', error);
     res.status(500).json({ error: 'Authentication error' });
   }
 };
@@ -153,7 +155,7 @@ export const optionalAuthMiddleware: RequestHandler = async (
 
     let decoded: jwt.JwtPayload;
     try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET!) as jwt.JwtPayload;
+      decoded = jwt.verify(token, env.JWT_SECRET) as jwt.JwtPayload;
     } catch {
       next();
       return;

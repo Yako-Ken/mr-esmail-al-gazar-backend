@@ -1,2 +1,9 @@
 node_modules/
 .env
+dist/
+uploads/
+prisma/*.db
+prisma/*.db-journal
+full_project_code.txt
+full_code.txt
+*.log

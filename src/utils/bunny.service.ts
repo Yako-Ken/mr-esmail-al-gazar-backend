@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { logger } from './logger';
 
 const STORAGE_ZONE_NAME = process.env.BUNNY_STORAGE_ZONE_NAME;
 const ACCESS_KEY = process.env.BUNNY_STORAGE_ACCESS_KEY;
@@ -40,7 +41,7 @@ export class BunnyService {
         libraryId: STREAM_LIBRARY_ID,
       };
     } catch (error: any) {
-      console.error('❌ Bunny Stream Create Error:', error.response?.data || error.message);
+      logger.error('❌ Bunny Stream Create Error:', error.response?.data || error.message);
       throw new Error(`Failed to create video in Bunny Stream: ${error.message}`);
     }
   }
@@ -58,7 +59,7 @@ export class BunnyService {
 
       const url = `${BASE_STORAGE_URL}/${remotePath}`;
 
-      console.log(`📤 Uploading to Bunny.net: ${url}`);
+      logger.info(`📤 Uploading to Bunny.net: ${url}`);
 
       const response = await axios.put(url, buffer, {
         headers: {
@@ -73,13 +74,13 @@ export class BunnyService {
       if (response.status === 201 || response.status === 200) {
         // Construct the public CDN URL
         const publicUrl = `${CDN_URL}/${remotePath}`;
-        console.log(`✅ Bunny.net upload success: ${publicUrl}`);
+        logger.info(`✅ Bunny.net upload success: ${publicUrl}`);
         return publicUrl;
       } else {
         throw new Error(`Bunny.net upload failed with status ${response.status}`);
       }
     } catch (error: any) {
-      console.error('❌ Bunny.net Upload Error:', error.response?.data || error.message);
+      logger.error('❌ Bunny.net Upload Error:', error.response?.data || error.message);
       
       if (error.code === 'ECONNABORTED') {
         throw new Error('Bunny.net upload timed out. Please check your connection or try again.');
@@ -105,9 +106,9 @@ export class BunnyService {
         headers: { AccessKey: ACCESS_KEY },
       });
       
-      console.log(`🗑️ Deleted from Bunny.net: ${remotePath}`);
+      logger.info(`🗑️ Deleted from Bunny.net: ${remotePath}`);
     } catch (error: any) {
-      console.error('❌ Bunny.net Delete Error:', error.response?.data || error.message);
+      logger.error('❌ Bunny.net Delete Error:', error.response?.data || error.message);
       // We don't throw here to avoid breaking the flow if a file was already deleted
     }
   }

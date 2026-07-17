@@ -5,13 +5,15 @@ import jwt from 'jsonwebtoken';
 import nodemailer from 'nodemailer';
 import crypto from 'crypto';
 import { getIO } from '../socket';
+import { logger } from '../utils/logger';
+import { env } from '../utils/env';
 
 const prisma = new PrismaClient();
 
 export const login = async (req: Request, res: Response): Promise<void> => {
   try {
-    console.log('📥 LOGIN REQUEST RECEIVED');
-    console.log('   Body:', JSON.stringify(req.body));
+    logger.info('📥 LOGIN REQUEST RECEIVED');
+    logger.info('   Body:', JSON.stringify(req.body));
 
     const identifier = req.body.identifier || req.body.phone || req.body.email;
     const password = req.body.password;
@@ -24,7 +26,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     // Explicitly treat the identifier as a string
     const searchIdentifier = String(identifier);
 
-    console.log('🔍 Looking for user with identifier:', searchIdentifier);
+    logger.info('🔍 Looking for user with identifier:', searchIdentifier);
 
     // MongoDB Mongoose uses $or, but Prisma uses OR
     const user = await prisma.user.findFirst({
@@ -37,28 +39,28 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     });
 
     if (!user) {
-      console.log('❌ User not found for identifier:', searchIdentifier);
+      logger.info('❌ User not found for identifier:', searchIdentifier);
       res.status(401).json({ error: 'Invalid credentials' });
       return;
     }
 
-    console.log('✅ User found:', user.name);
+    logger.info('✅ User found:', user.name);
 
     const isPasswordValid = await bcrypt.compare(password, user.password);
 
     if (!isPasswordValid) {
-      console.log('❌ Invalid password for user:', searchIdentifier);
+      logger.info('❌ Invalid password for user:', searchIdentifier);
       res.status(401).json({ error: 'Invalid credentials' });
       return;
     }
 
     const token = jwt.sign(
       { id: user.id, phone: user.phone, role: user.role },
-      process.env.JWT_SECRET!,
+      env.JWT_SECRET,
       { expiresIn: '7d' }
     );
 
-    console.log('✅ Login successful for user:', searchIdentifier);
+    logger.info('✅ Login successful for user:', searchIdentifier);
 
     res.json({
       token,
@@ -72,7 +74,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       },
     });
   } catch (error) {
-    console.error('🔴 Login error:', error);
+    logger.error('🔴 Login error:', error);
     
     if (error instanceof Error && error.message.includes('database')) {
       res.status(503).json({ error: 'Database unavailable. Please try again later.' });
@@ -148,13 +150,13 @@ export const register = async (req: Request, res: Response): Promise<void> => {
     // ── Auto-link: when a PARENT registers, find students whose stored
     // parentPhone matches this parent's phone and create the relation.
     if (user.role === 'PARENT') {
-      console.log(`✅ PARENT registered: ${user.phone} — children will be linked via /api/parents/my-children`);
+      logger.info(`✅ PARENT registered: ${user.phone} — children will be linked via /api/parents/my-children`);
     }
 
     // Issue JWT immediately so the client is authenticated without a separate login
     const token = jwt.sign(
       { id: user.id, phone: user.phone, role: user.role },
-      process.env.JWT_SECRET!,
+      env.JWT_SECRET,
       { expiresIn: '7d' }
     );
 
@@ -171,7 +173,7 @@ export const register = async (req: Request, res: Response): Promise<void> => {
       },
     });
   } catch (error) {
-    console.error('Register error:', error);
+    logger.error('Register error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -214,7 +216,7 @@ export const editProfile = async (req: Request, res: Response): Promise<void> =>
 
     res.json({ user });
   } catch (error) {
-    console.error('editProfile error:', error);
+    logger.error('editProfile error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -263,7 +265,7 @@ export const getMe = async (req: Request, res: Response): Promise<void> => {
 
     res.json(response);
   } catch (error) {
-    console.error('getMe error:', error);
+    logger.error('getMe error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -310,7 +312,7 @@ export const changePassword = async (req: Request, res: Response): Promise<void>
 
     res.json({ message: 'Password changed successfully' });
   } catch (error) {
-    console.error('changePassword error:', error);
+    logger.error('changePassword error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -400,7 +402,7 @@ export const requestForgotPasswordOTP = async (req: Request, res: Response): Pro
 
     res.json({ message: 'OTP sent to your email' });
   } catch (error) {
-    console.error('requestForgotPasswordOTP error:', error);
+    logger.error('requestForgotPasswordOTP error:', error);
     res.status(500).json({ error: 'Failed to send OTP' });
   }
 };
@@ -437,7 +439,7 @@ export const verifyForgotPasswordOTP = async (req: Request, res: Response): Prom
 
     res.json({ message: 'OTP verified', resetToken });
   } catch (error) {
-    console.error('verifyForgotPasswordOTP error:', error);
+    logger.error('verifyForgotPasswordOTP error:', error);
     res.status(500).json({ error: 'Failed to verify OTP' });
   }
 };
@@ -474,7 +476,7 @@ export const resetPassword = async (req: Request, res: Response): Promise<void> 
 
     res.json({ message: 'Password reset successful' });
   } catch (error) {
-    console.error('resetPassword error:', error);
+    logger.error('resetPassword error:', error);
     res.status(500).json({ error: 'Failed to reset password' });
   }
 };

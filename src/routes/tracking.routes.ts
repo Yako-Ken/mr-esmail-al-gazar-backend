@@ -5,6 +5,7 @@ import { submitQuiz } from '../controllers/lesson.controller';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import { logger } from '../utils/logger';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -101,9 +102,9 @@ const getPendingEssays: RequestHandler = async (req, res): Promise<void> => {
         essayAnswer: q.essayAnswer || q.modelAnswer || q.answer || q.correctAnswer || '',
         points: q.points || q.mark || q.score || q.maxPoints || 10,
       }));
-      console.log('Parsed essay questions:', JSON.stringify(essayQuestions));
+      logger.info('Parsed essay questions:', JSON.stringify(essayQuestions));
     } catch (e) {
-      console.error('Failed to parse quiz questions:', e);
+      logger.error('Failed to parse quiz questions:', e);
     }
 
     // Get all enrolled students in the course
@@ -136,7 +137,7 @@ const getPendingEssays: RequestHandler = async (req, res): Promise<void> => {
           try {
             parsedEssayAnswers = JSON.parse(tracking.essayAnswers);
           } catch (e) {
-            console.error('Failed to parse essay answers:', e);
+            logger.error('Failed to parse essay answers:', e);
           }
         }
         
@@ -230,7 +231,7 @@ const getPendingEssays: RequestHandler = async (req, res): Promise<void> => {
 
     res.json(students);
   } catch (error) {
-    console.error('Get pending essays error:', error);
+    logger.error('Get pending essays error:', error);
     res.status(500).json({ error: 'Failed to fetch pending essays' });
   }
 };
@@ -259,7 +260,7 @@ export const submitHomework: RequestHandler = async (req, res): Promise<void> =>
     const { lessonId } = req.body as { lessonId?: string };
     const files = (req as any).files as Express.Multer.File[] | undefined;
 
-    console.log('📥 submitHomework called:', {
+    logger.info('📥 submitHomework called:', {
       lessonId,
       files: files?.map(f => f.originalname),
       studentId: authUser.id
@@ -315,7 +316,7 @@ export const submitHomework: RequestHandler = async (req, res): Promise<void> =>
     });
 
     const baseUrl = `${req.protocol}://${req.get('host')}`;
-    console.log('📝 Homework submitted:', {
+    logger.info('📝 Homework submitted:', {
       studentId: authUser.id,
       lessonId,
       filesCount: files.length,
@@ -328,7 +329,7 @@ export const submitHomework: RequestHandler = async (req, res): Promise<void> =>
       fileUrl: `${baseUrl}/${hwFileUrl}`,
     });
   } catch (error) {
-    console.error('submitHomework error:', error);
+    logger.error('submitHomework error:', error);
     res.status(500).json({ error: 'Failed to submit homework' });
   }
 };
@@ -380,7 +381,7 @@ export const markAttendance: RequestHandler = async (req, res): Promise<void> =>
       tracking,
     });
   } catch (error) {
-    console.error('Mark attendance error:', error);
+    logger.error('Mark attendance error:', error);
     res.status(500).json({ error: 'Failed to mark attendance' });
   }
 };
@@ -437,7 +438,7 @@ export const getLessonWithQuiz: RequestHandler = async (req, res): Promise<void>
           parsedQuestions = raw || [];
         }
       } catch (e) {
-        console.error('Failed to parse quiz questions for quiz', quiz.id, e);
+        logger.error('Failed to parse quiz questions for quiz', quiz.id, e);
       }
       return {
         id: quiz.id,
@@ -473,7 +474,7 @@ export const getLessonWithQuiz: RequestHandler = async (req, res): Promise<void>
       tracking: tracking || null,
     });
   } catch (error) {
-    console.error('Get lesson error:', error);
+    logger.error('Get lesson error:', error);
     res.status(500).json({ error: 'Failed to fetch lesson' });
   }
 };
@@ -576,7 +577,7 @@ const gradeEssay: RequestHandler = async (req, res): Promise<void> => {
       },
     });
 
-    console.log('✅ Essay graded:', { trackingId, keysToGrade, safeScore, newTotalScore });
+    logger.info('✅ Essay graded:', { trackingId, keysToGrade, safeScore, newTotalScore });
 
     res.json({
       success:            true,
@@ -585,7 +586,7 @@ const gradeEssay: RequestHandler = async (req, res): Promise<void> => {
       needsManualGrading: updated.hwStatus === 'PENDING',
     });
   } catch (error) {
-    console.error('Grade essay error:', error);
+    logger.error('Grade essay error:', error);
     res.status(500).json({ error: 'Failed to grade essay' });
   }
 };

@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction, RequestHandler } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { AuthUser } from './auth.middleware';
+import { logger } from '../utils/logger';
 
 const prisma = new PrismaClient();
 
@@ -105,7 +106,7 @@ export const checkTeacherApproval: RequestHandler = async (
     // Normalize to UPPERCASE — covers 'approved', 'APPROVED', 'Approved' equally
     const normalizedStatus = dbUser.status?.toUpperCase();
 
-    console.log(
+    logger.info(
       `🔍 checkTeacherApproval | userId=${dbUser.id} | role=${dbUser.role}` +
       ` | status="${dbUser.status}" | isApproved=${dbUser.isApproved} | isVerified=${dbUser.isVerified}`
     );
@@ -129,7 +130,7 @@ export const checkTeacherApproval: RequestHandler = async (
 
     next();
   } catch (error) {
-    console.error('checkTeacherApproval error:', error);
+    logger.error('checkTeacherApproval error:', error);
     res.status(500).json({ error: 'Server error during approval check' });
   }
 };

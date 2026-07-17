@@ -1,16 +1,17 @@
 import fs from 'fs';
 import path from 'path';
 import { PrismaClient } from '@prisma/client';
+import { logger } from './logger';
 
 const prisma = new PrismaClient();
 
 const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
 
 export async function cleanupOrphanedFiles() {
-  console.log('🧹 Starting orphaned files cleanup...');
+  logger.info('🧹 Starting orphaned files cleanup...');
 
   if (!fs.existsSync(UPLOADS_DIR)) {
-    console.log('📁 No uploads directory found');
+    logger.info('📁 No uploads directory found');
     return;
   }
 
@@ -36,7 +37,7 @@ export async function cleanupOrphanedFiles() {
     if (course.thumbnailUrl) validFilesSet.add(path.basename(course.thumbnailUrl));
   }
 
-  console.log(`📊 Found ${validFilesSet.size} files referenced in database`);
+  logger.info(`📊 Found ${validFilesSet.size} files referenced in database`);
 
   // Check uploads directory for orphaned files
   const subdirs = ['videos', 'thumbnails', 'pdfs', '', 'temp'];
@@ -58,16 +59,16 @@ export async function cleanupOrphanedFiles() {
         
         if (!validFilesSet.has(fileName)) {
           fs.unlinkSync(fullPath);
-          console.log(`🗑️  Deleted orphaned file: ${fileName}`);
+          logger.info(`🗑️  Deleted orphaned file: ${fileName}`);
           deletedCount++;
         }
       } catch (err) {
-        console.error(`⚠️  Failed to process ${fullPath}:`, err);
+        logger.error(`⚠️  Failed to process ${fullPath}:`, err);
       }
     }
   }
 
-  console.log(`✅ Cleanup complete. Deleted ${deletedCount} orphaned files.`);
+  logger.info(`✅ Cleanup complete. Deleted ${deletedCount} orphaned files.`);
 }
 
 cleanupOrphanedFiles()

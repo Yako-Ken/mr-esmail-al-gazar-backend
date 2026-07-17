@@ -1,10 +1,15 @@
 import { Router } from 'express';
+import { logger } from '../utils/logger';
+import { env } from '../utils/env';
+import { otpRateLimit } from '../middlewares/rateLimit.middleware';
+import { validateBody } from '../middlewares/validate.middleware';
+import { requestOtpSchema } from '../schemas/auth.schema';
 
 const router = Router();
 
 // POST /api/auth/student/request-otp
 // Dummy endpoint - returns success without actually sending SMS
-router.post('/student/request-otp', async (req, res) => {
+router.post('/student/request-otp', otpRateLimit, validateBody(requestOtpSchema), async (req, res) => {
   try {
     const { phone } = req.body;
 
@@ -17,14 +22,14 @@ router.post('/student/request-otp', async (req, res) => {
 
     // TODO: Implement Telegram SMS integration
     // For now, just return success so Flutter app doesn't break
-    console.log(`📱 OTP request for ${phone} (Telegram integration pending)`);
+    logger.info(`📱 OTP request for ${phone} (Telegram integration pending)`);
 
     return res.status(200).json({
       success: true,
       message: 'تم إرسال الكود بنجاح',
     });
   } catch (error: any) {
-    console.error('❌ Error sending OTP:', error);
+    logger.error('❌ Error sending OTP:', error);
     return res.status(500).json({
       success: false,
       error: error.message || 'Failed to send OTP',
@@ -34,7 +39,7 @@ router.post('/student/request-otp', async (req, res) => {
 
 // POST /api/auth/student/verify-otp
 // Dummy verification - accepts any 4-digit code
-router.post('/student/verify-otp', async (req, res) => {
+router.post('/student/verify-otp', otpRateLimit, async (req, res) => {
   try {
     const { phone, code } = req.body;
 
@@ -47,7 +52,7 @@ router.post('/student/verify-otp', async (req, res) => {
 
     // TODO: Implement proper OTP verification from database
     // For now, accept any 4-digit code
-    console.log(`🔐 Verifying OTP ${code} for ${phone}`);
+    logger.info(`🔐 Verifying OTP ${code} for ${phone}`);
 
     if (code.length === 4 && /^\d+$/.test(code)) {
       return res.status(200).json({
@@ -61,7 +66,7 @@ router.post('/student/verify-otp', async (req, res) => {
       });
     }
   } catch (error: any) {
-    console.error('❌ Error verifying OTP:', error);
+    logger.error('❌ Error verifying OTP:', error);
     return res.status(500).json({
       success: false,
       error: error.message || 'Failed to verify OTP',
@@ -70,7 +75,7 @@ router.post('/student/verify-otp', async (req, res) => {
 });
 
 // POST /api/auth/parent/request-otp
-router.post('/parent/request-otp', async (req, res) => {
+router.post('/parent/request-otp', otpRateLimit, validateBody(requestOtpSchema), async (req, res) => {
   try {
     const { phone } = req.body;
 
@@ -82,14 +87,14 @@ router.post('/parent/request-otp', async (req, res) => {
     }
 
     // TODO: Implement Telegram SMS integration
-    console.log(`📱 Parent OTP request for ${phone} (Telegram integration pending)`);
+    logger.info(`📱 Parent OTP request for ${phone} (Telegram integration pending)`);
 
     return res.status(200).json({
       success: true,
       message: 'تم إرسال الكود بنجاح',
     });
   } catch (error: any) {
-    console.error('❌ Error sending OTP:', error);
+    logger.error('❌ Error sending OTP:', error);
     return res.status(500).json({
       success: false,
       error: error.message || 'Failed to send OTP',
@@ -98,7 +103,7 @@ router.post('/parent/request-otp', async (req, res) => {
 });
 
 // POST /api/auth/parent/verify-otp
-router.post('/parent/verify-otp', async (req, res) => {
+router.post('/parent/verify-otp', otpRateLimit, async (req, res) => {
   try {
     const { phone, code } = req.body;
 
@@ -109,7 +114,7 @@ router.post('/parent/verify-otp', async (req, res) => {
       });
     }
 
-    console.log(`🔐 Verifying parent OTP ${code} for ${phone}`);
+    logger.info(`🔐 Verifying parent OTP ${code} for ${phone}`);
 
     if (code.length === 4 && /^\d+$/.test(code)) {
       return res.status(200).json({
@@ -123,7 +128,7 @@ router.post('/parent/verify-otp', async (req, res) => {
       });
     }
   } catch (error: any) {
-    console.error('❌ Error verifying OTP:', error);
+    logger.error('❌ Error verifying OTP:', error);
     return res.status(500).json({
       success: false,
       error: error.message || 'Failed to verify OTP',
@@ -145,10 +150,9 @@ router.get('/student/parent-verification-status', async (req, res) => {
 
     const token = authHeader.split(' ')[1];
     const jwt = require('jsonwebtoken');
-    const jwtSecret = process.env.JWT_SECRET || 'your-secret-key';
-    
+
     try {
-      jwt.verify(token, jwtSecret);
+      jwt.verify(token, env.JWT_SECRET);
     } catch (e) {
       return res.status(401).json({
         verified: false,
@@ -162,7 +166,7 @@ router.get('/student/parent-verification-status', async (req, res) => {
       message: 'Parent verified',
     });
   } catch (error: any) {
-    console.error('❌ Error checking parent verification:', error);
+    logger.error('❌ Error checking parent verification:', error);
     return res.status(500).json({
       verified: false,
       error: error.message || 'Failed to check verification',

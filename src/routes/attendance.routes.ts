@@ -1,6 +1,7 @@
 import { Router, Request, Response, RequestHandler } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthUser } from '../middlewares/auth.middleware';
+import { logger } from '../utils/logger';
 
 const prisma = new PrismaClient();
 
@@ -59,7 +60,7 @@ export const createSession: RequestHandler = async (req, res): Promise<void> => 
 
     res.status(201).json({ session });
   } catch (error) {
-    console.error('Create session error:', error);
+    logger.error('Create session error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -93,7 +94,7 @@ export const getSessions: RequestHandler = async (req, res): Promise<void> => {
 
     res.json(result);
   } catch (error) {
-    console.error('Get sessions error:', error);
+    logger.error('Get sessions error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -162,7 +163,7 @@ export const markAttendance: RequestHandler = async (req, res): Promise<void> =>
       student: { id: student.id, name: student.name },
     });
   } catch (error) {
-    console.error('Mark attendance error:', error);
+    logger.error('Mark attendance error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -209,7 +210,7 @@ export const getSessionDetails: RequestHandler = async (req, res): Promise<void>
       })),
     });
   } catch (error) {
-    console.error('Get session details error:', error);
+    logger.error('Get session details error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };

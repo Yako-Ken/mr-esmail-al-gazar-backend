@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthUser } from '../middlewares/auth.middleware';
 import path from 'path';
 import fs from 'fs';
+import { logger } from '../utils/logger';
 
 const prisma = new PrismaClient();
 
@@ -53,7 +54,7 @@ export const getTeacherCourses: RequestHandler = async (req, res): Promise<void>
 
     res.json(result);
   } catch (error) {
-    console.error('getTeacherCourses error:', error);
+    logger.error('getTeacherCourses error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -106,7 +107,7 @@ export const getAllCourses: RequestHandler = async (req, res): Promise<void> => 
 
     res.json(result);
   } catch (error) {
-    console.error('getAllCourses error:', error);
+    logger.error('getAllCourses error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -140,7 +141,7 @@ export const createCourse: RequestHandler = async (req, res): Promise<void> => {
     }
     
     // DEBUG: Log what's being received
-    console.log('🔥 DEBUG createCourse body:', req.body);
+    logger.info('🔥 DEBUG createCourse body:', req.body);
 
     const parsedPrice = price ? parseFloat(price) : 0;
     if (isNaN(parsedPrice) || parsedPrice < 0) {
@@ -180,7 +181,7 @@ export const createCourse: RequestHandler = async (req, res): Promise<void> => {
       },
     });
   } catch (error) {
-    console.error('createCourse error:', error);
+    logger.error('createCourse error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -231,7 +232,7 @@ export const getCourseById: RequestHandler = async (req, res): Promise<void> => 
           try {
             parsedQuizData = JSON.parse(firstQuiz.questions);
           } catch (e) {
-            console.error('Failed to parse quiz questions:', e);
+            logger.error('Failed to parse quiz questions:', e);
           }
         }
         
@@ -260,7 +261,7 @@ export const getCourseById: RequestHandler = async (req, res): Promise<void> => 
       }),
     });
   } catch (error) {
-    console.error('getCourseById error:', error);
+    logger.error('getCourseById error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -320,10 +321,10 @@ export const updateCourse: RequestHandler = async (req, res): Promise<void> => {
       data: updateData,
     });
 
-    console.log('Course updated:', { id: updated.id, title: updated.title, by: authUser.id });
+    logger.info('Course updated:', { id: updated.id, title: updated.title, by: authUser.id });
     res.json({ message: 'Course updated', course: updated });
   } catch (error) {
-    console.error('updateCourse error:', error);
+    logger.error('updateCourse error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -367,10 +368,10 @@ export const deleteCourse: RequestHandler = async (req, res): Promise<void> => {
       await tx.course.delete({ where: { id } });
     });
 
-    console.log('Course DELETED (cascade):', { id, title: course.title, by: authUser.id });
+    logger.info('Course DELETED (cascade):', { id, title: course.title, by: authUser.id });
     res.json({ message: 'Course deleted successfully' });
   } catch (error) {
-    console.error('deleteCourse error:', error);
+    logger.error('deleteCourse error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -417,10 +418,10 @@ export const uploadThumbnail: RequestHandler = async (req, res): Promise<void> =
       data: { thumbnailUrl: relativePath },
     });
 
-    console.log('Thumbnail uploaded:', { courseId: id, relativePath, by: authUser.id });
+    logger.info('Thumbnail uploaded:', { courseId: id, relativePath, by: authUser.id });
     res.json({ message: 'Thumbnail updated', thumbnailUrl: `/uploads/${relativePath}`, courseId: updated.id });
   } catch (error) {
-    console.error('uploadThumbnail error:', error);
+    logger.error('uploadThumbnail error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };

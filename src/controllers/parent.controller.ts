@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
+import { logger } from '../utils/logger';
 
 const prisma = new PrismaClient();
 
@@ -51,7 +52,7 @@ export const getMyChildren = async (req: Request, res: Response): Promise<void> 
 
     res.json({ children: sanitizedChildren });
   } catch (error) {
-    console.error('getMyChildren error:', error);
+    logger.error('getMyChildren error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -157,7 +158,7 @@ export const getChildStats = async (req: Request, res: Response): Promise<void> 
       activeCourses
     });
   } catch (error) {
-    console.error('getChildStats error:', error);
+    logger.error('getChildStats error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };

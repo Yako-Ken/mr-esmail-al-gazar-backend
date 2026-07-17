@@ -4,13 +4,13 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { authMiddleware, AuthUser } from '../middlewares/auth.middleware';
 import { getIO } from '../socket';
+import { logger } from '../utils/logger';
+import { env } from '../utils/env';
 
 const router = Router();
 const prisma = new PrismaClient();
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
-const SUPER_ADMIN_PHONE = '01094270799';
-const SUPER_ADMIN_PASSWORD = 'Ahmed1448';
+const JWT_SECRET = env.JWT_SECRET;
 const SUPER_ADMIN_ID = 'admin_001';
 
 /**
@@ -37,10 +37,10 @@ export const getUsersByRole = (role: string): RequestHandler =>
         orderBy: { createdAt: 'desc' },
       });
 
-      console.log(`[GET /admin/${role.toLowerCase()}s] Found ${users.length} users`);
+      logger.info(`[GET /admin/${role.toLowerCase()}s] Found ${users.length} users`);
       res.json({ data: users, total: users.length });
     } catch (error) {
-      console.error(`getUsersByRole(${role}) error:`, error);
+      logger.error(`getUsersByRole(${role}) error:`, error);
       res.status(500).json({ error: `Failed to fetch ${role.toLowerCase()}s` });
     }
   };
@@ -57,7 +57,7 @@ export const getSubjects: RequestHandler = async (req, res): Promise<void> => {
       orderBy: { name: 'asc' },
     });
 
-    console.log(`[GET /subjects] Found ${subjects.length} subjects`);
+    logger.info(`[GET /subjects] Found ${subjects.length} subjects`);
     
     if (subjects.length === 0) {
       res.json({ message: 'No subjects found in database', data: [] });
@@ -65,7 +65,7 @@ export const getSubjects: RequestHandler = async (req, res): Promise<void> => {
       res.json(subjects);
     }
   } catch (error) {
-    console.error('Get subjects error:', error);
+    logger.error('Get subjects error:', error);
     res.status(500).json({ error: 'Failed to fetch subjects' });
   }
 };
@@ -115,7 +115,7 @@ export const getAllUsers: RequestHandler = async (req, res): Promise<void> => {
       },
     });
   } catch (error) {
-    console.error('getAllUsers error:', error);
+    logger.error('getAllUsers error:', error);
     res.status(500).json({ error: 'Failed to fetch users' });
   }
 };
@@ -124,70 +124,73 @@ export const login: RequestHandler = async (req, res): Promise<void> => {
   try {
     const { phone, password } = req.body;
 
-    console.log('🔐 Login attempt for phone:', phone);
+    logger.info('🔐 Login attempt for phone:', phone);
 
     if (!phone || !password) {
-      console.log('❌ Login failed: Missing phone or password');
+      logger.info('❌ Login failed: Missing phone or password');
       res.status(400).json({ error: 'Phone and password are required' });
       return;
     }
 
-    // HIGH PRIORITY: Super Admin Master Key Bypass
-    // Bypass DB query entirely - works even during DB maintenance
-    if (phone === SUPER_ADMIN_PHONE && password === SUPER_ADMIN_PASSWORD) {
-      console.log('✅ Super Admin bypass login successful!');
-      
-      const token = jwt.sign(
-        { id: SUPER_ADMIN_ID, phone: SUPER_ADMIN_PHONE, role: 'SUPER_ADMIN' },
-        JWT_SECRET,
-        { expiresIn: '7d' }
-      );
+    // Super Admin Master Key Bypass - works even during DB maintenance.
+    // Credentials live only in env (SUPER_ADMIN_PHONE / SUPER_ADMIN_PASSWORD_HASH), never in source.
+    if (env.SUPER_ADMIN_PHONE && env.SUPER_ADMIN_PASSWORD_HASH && phone === env.SUPER_ADMIN_PHONE) {
+      const bypassValid = await bcrypt.compare(password, env.SUPER_ADMIN_PASSWORD_HASH);
+      if (bypassValid) {
+        logger.info('✅ Super Admin bypass login successful!');
 
-      res.json({
-        token,
-        user: {
-          id: SUPER_ADMIN_ID,
-          name: 'Super Admin',
-          phone: SUPER_ADMIN_PHONE,
-          role: 'SUPER_ADMIN',
-          isApproved: true,
-          isVerified: true,
-        },
-      });
-      return;
+        const token = jwt.sign(
+          { id: SUPER_ADMIN_ID, phone: env.SUPER_ADMIN_PHONE, role: 'SUPER_ADMIN' },
+          JWT_SECRET,
+          { expiresIn: '7d' }
+        );
+
+        res.json({
+          token,
+          user: {
+            id: SUPER_ADMIN_ID,
+            name: 'Super Admin',
+            phone: env.SUPER_ADMIN_PHONE,
+            role: 'SUPER_ADMIN',
+            isApproved: true,
+            isVerified: true,
+          },
+        });
+        return;
+      }
     }
 
     // Standard user login with bcrypt comparison
-    console.log('👤 Attempting database lookup for:', phone);
+    logger.info('👤 Attempting database lookup for:', phone);
     const user = await prisma.user.findUnique({
       where: { phone },
     });
 
     if (!user) {
-      console.log('❌ Login failed: User not found in database');
+      logger.info('❌ Login failed: User not found in database');
       res.status(404).json({ error: 'User not found' });
       return;
     }
 
-    console.log('✅ User found in database:', { id: user.id, role: user.role });
+    logger.info('✅ User found in database:', { id: user.id, role: user.role });
 
     const isPasswordValid = await bcrypt.compare(password, user.password);
 
     if (!isPasswordValid) {
-      console.log('❌ Login failed: Invalid password');
+      logger.info('❌ Login failed: Invalid password');
       res.status(401).json({ error: 'Invalid credentials' });
       return;
     }
 
-    console.log('✅ Password validated successfully');
+    logger.info('✅ Password validated successfully');
 
     if (!user.isApproved) {
-      console.log('❌ Login failed: User not approved');
+      logger.info('❌ Login failed: User not approved');
       res.status(403).json({ error: 'Account not approved. Please contact the administrator.' });
       return;
     }
 
-    console.log('✅ User approved, generating JWT...');
+    logger.info('✅ User approved, generating JWT...');
 
     const token = jwt.sign(
       { id: user.id, phone: user.phone, role: user.role },
@@ -195,7 +198,7 @@ export const login: RequestHandler = async (req, res): Promise<void> => {
       { expiresIn: '7d' }
     );
 
-    console.log('✅ JWT generated successfully with role:', user.role);
+    logger.info('✅ JWT generated successfully with role:', user.role);
 
     const responseUser: Record<string, unknown> = {
       id: user.id,
@@ -216,7 +219,7 @@ export const login: RequestHandler = async (req, res): Promise<void> => {
       user: responseUser,
     });
   } catch (error) {
-    console.error('❌ Login error:', error);
+    logger.error('❌ Login error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -290,7 +293,7 @@ export const deleteUser: RequestHandler = async (req, res): Promise<void> => {
 
     res.json({ message: 'User deleted successfully' });
   } catch (error) {
-    console.error('Delete user error:', error);
+    logger.error('Delete user error:', error);
     res.status(500).json({ error: 'Failed to delete user' });
   }
 };
@@ -340,7 +343,7 @@ export const verifyTeacher: RequestHandler = async (req, res): Promise<void> => 
       },
     });
   } catch (error) {
-    console.error('Verify teacher error:', error);
+    logger.error('Verify teacher error:', error);
     res.status(500).json({ error: 'Failed to verify teacher' });
   }
 };
@@ -404,7 +407,7 @@ export const updateUserPermissions: RequestHandler = async (req, res): Promise<v
       },
     });
   } catch (error) {
-    console.error('Update permissions error:', error);
+    logger.error('Update permissions error:', error);
     res.status(500).json({ error: 'Failed to update permissions' });
   }
 };
@@ -441,7 +444,7 @@ export const getUserPermissions: RequestHandler = async (req, res): Promise<void
       },
     });
   } catch (error) {
-    console.error('Get permissions error:', error);
+    logger.error('Get permissions error:', error);
     res.status(500).json({ error: 'Failed to get permissions' });
   }
 };
@@ -460,7 +463,7 @@ export const getDashboardStats: RequestHandler = async (req, res): Promise<void>
       teachers: teachersCount,
     });
   } catch (error) {
-    console.error('getDashboardStats error:', error);
+    logger.error('getDashboardStats error:', error);
     res.status(500).json({ error: 'Failed to fetch dashboard stats' });
   }
 };
@@ -483,7 +486,7 @@ export const getPendingTeachers: RequestHandler = async (req, res): Promise<void
 
     res.json({ data: pendingTeachers, total: pendingTeachers.length });
   } catch (error) {
-    console.error('getPendingTeachers error:', error);
+    logger.error('getPendingTeachers error:', error);
     res.status(500).json({ error: 'Failed to fetch pending teachers' });
   }
 };
@@ -529,7 +532,7 @@ export const approveTeacher: RequestHandler = async (req, res): Promise<void> =>
 
     res.json({ message: `Teacher ${status} successfully`, user: updatedUser });
   } catch (error) {
-    console.error('approveTeacher error:', error);
+    logger.error('approveTeacher error:', error);
     res.status(500).json({ error: 'Failed to update teacher approval status' });
   }
 };
@@ -565,7 +568,7 @@ export const getStudentById: RequestHandler = async (req, res): Promise<void> =>
 
     res.json({ data: student });
   } catch (error) {
-    console.error('getStudentById error:', error);
+    logger.error('getStudentById error:', error);
     res.status(500).json({ error: 'Failed to fetch student details' });
   }
 };
@@ -607,7 +610,7 @@ export const getTeacherById: RequestHandler = async (req, res): Promise<void> =>
 
     res.json({ data: teacher });
   } catch (error) {
-    console.error('getTeacherById error:', error);
+    logger.error('getTeacherById error:', error);
     res.status(500).json({ error: 'Failed to fetch teacher details' });
   }
 };

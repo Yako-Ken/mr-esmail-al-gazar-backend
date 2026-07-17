@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import { logger } from './logger';
 
 const prisma = new PrismaClient();
 
@@ -14,7 +15,7 @@ export const seedSuperAdmin = async () => {
     });
 
     if (!existingAdmin) {
-      console.log('🌱 Super Admin not found. Creating default admin account...');
+      logger.info('🌱 Super Admin not found. Creating default admin account...');
       
       const admin = await prisma.user.create({
         data: {
@@ -29,9 +30,9 @@ export const seedSuperAdmin = async () => {
         },
       });
       
-      console.log(`✅ Super Admin created! Phone: ${admin.phone}, Email: ${adminEmail}, Password: Ahmed1448`);
+      logger.info(`✅ Super Admin created! Phone: ${admin.phone}, Email: ${adminEmail}, Password: Ahmed1448`);
     } else {
-      console.log('✅ Super Admin account exists. Verifying identifiers...');
+      logger.info('✅ Super Admin account exists. Verifying identifiers...');
       // Logic to update the existing admin if it is missing phone or email
       if (existingAdmin.phone !== adminPhone || existingAdmin.email !== adminEmail) {
         await prisma.user.update({
@@ -42,12 +43,12 @@ export const seedSuperAdmin = async () => {
             // We can also reset password here if requested, but let's just update the identifier
           }
         });
-        console.log(`✅ Super Admin updated to ensure Phone: ${adminPhone} and Email: ${adminEmail}`);
+        logger.info(`✅ Super Admin updated to ensure Phone: ${adminPhone} and Email: ${adminEmail}`);
       } else {
-        console.log(`✅ Super Admin identifiers are correct.`);
+        logger.info(`✅ Super Admin identifiers are correct.`);
       }
     }
   } catch (error) {
-    console.error('❌ Error seeding Super Admin:', error);
+    logger.error('❌ Error seeding Super Admin:', error);
   }
 };

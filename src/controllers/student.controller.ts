@@ -1,6 +1,7 @@
 import { Request, Response, RequestHandler } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { AuthUser } from '../middlewares/auth.middleware';
+import { logger } from '../utils/logger';
 
 const prisma = new PrismaClient();
 
@@ -103,7 +104,7 @@ export const getStudentDashboard = async (req: Request, res: Response): Promise<
       },
     });
   } catch (error) {
-    console.error('getStudentDashboard error:', error);
+    logger.error('getStudentDashboard error:', error);
     res.status(500).json({ error: 'Failed to fetch dashboard data' });
   }
 };
@@ -149,7 +150,7 @@ export const getWeeklyProgress = async (req: Request, res: Response): Promise<vo
       remainingHours: Math.max(0, weeklyGoalHours - watchedHoursThisWeek),
     });
   } catch (error) {
-    console.error('getWeeklyProgress error:', error);
+    logger.error('getWeeklyProgress error:', error);
     res.status(500).json({ error: 'Failed to fetch weekly progress data' });
   }
 };
@@ -208,7 +209,7 @@ export const getRecentLessons: RequestHandler = async (req, res): Promise<void> 
 
     res.json(result);
   } catch (error) {
-    console.error('getRecentLessons error:', error);
+    logger.error('getRecentLessons error:', error);
     res.status(500).json({ error: 'Failed to fetch recent lessons' });
   }
 };
@@ -299,10 +300,10 @@ export const getTeacherStudents: RequestHandler = async (req, res): Promise<void
       courses: studentCoursesMap.get(s.id) || [],
     }));
 
-    console.log('All students for teacher:', { total: result.length, ownerId });
+    logger.info('All students for teacher:', { total: result.length, ownerId });
     res.json(result);
   } catch (error) {
-    console.error('getTeacherStudents error:', error);
+    logger.error('getTeacherStudents error:', error);
     res.status(500).json({ error: 'Failed to fetch students' });
   }
 };
@@ -343,10 +344,10 @@ export const removeStudentEnrollment: RequestHandler = async (req, res): Promise
     }
 
     await prisma.courseEnrollment.delete({ where: { id: enrollment.id } });
-    console.log('Student removed from course:', { studentId, courseId, by: authUser.id });
+    logger.info('Student removed from course:', { studentId, courseId, by: authUser.id });
     res.json({ message: 'Student removed successfully' });
   } catch (error) {
-    console.error('removeStudentEnrollment error:', error);
+    logger.error('removeStudentEnrollment error:', error);
     res.status(500).json({ error: 'Failed to remove student' });
   }
 };
@@ -388,7 +389,7 @@ export const getTeacherCoursesForGrading: RequestHandler = async (req, res): Pro
 
     res.json(coursesWithCount);
   } catch (error) {
-    console.error('getTeacherCoursesForGrading error:', error);
+    logger.error('getTeacherCoursesForGrading error:', error);
     res.status(500).json({ error: 'Failed to fetch courses' });
   }
 };
@@ -462,7 +463,7 @@ export const getCourseAssignments: RequestHandler = async (req, res): Promise<vo
 
     res.json(assignments);
   } catch (error) {
-    console.error('getCourseAssignments error:', error);
+    logger.error('getCourseAssignments error:', error);
     res.status(500).json({ error: 'Failed to fetch assignments' });
   }
 };
@@ -546,7 +547,7 @@ export const getCourseQuizzes: RequestHandler = async (req, res): Promise<void> 
 
     res.json(quizzes);
   } catch (error) {
-    console.error('getCourseQuizzes error:', error);
+    logger.error('getCourseQuizzes error:', error);
     res.status(500).json({ error: 'Failed to fetch quizzes' });
   }
 };
@@ -633,11 +634,11 @@ export const getAssignmentSubmissions: RequestHandler = async (req, res): Promis
       })
     );
 
-    console.log(`📡 Submissions for ${assignmentId}:`, submissions.map(s => ({ n: s.studentName, st: s.status, hasF: !!s.hwFileUrl })));
+    logger.info(`📡 Submissions for ${assignmentId}:`, submissions.map(s => ({ n: s.studentName, st: s.status, hasF: !!s.hwFileUrl })));
 
     res.json(submissions);
   } catch (error) {
-    console.error('getAssignmentSubmissions error:', error);
+    logger.error('getAssignmentSubmissions error:', error);
     res.status(500).json({ error: 'Failed to fetch submissions' });
   }
 };
@@ -711,10 +712,10 @@ export const updateSubmissionStatus: RequestHandler = async (req, res): Promise<
       });
     }
 
-    console.log('Submission status updated:', { assignmentId, studentId, status, by: authUser.id });
+    logger.info('Submission status updated:', { assignmentId, studentId, status, by: authUser.id });
     res.json({ message: `Submission ${status} successfully`, status: tracking.hwStatus });
   } catch (error) {
-    console.error('updateSubmissionStatus error:', error);
+    logger.error('updateSubmissionStatus error:', error);
     res.status(500).json({ error: 'Failed to update submission status' });
   }
 };

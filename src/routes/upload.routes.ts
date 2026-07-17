@@ -5,6 +5,7 @@ import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthUser } from '../middlewares/auth.middleware';
 import { checkTeacherApproval } from '../middlewares/role.middleware';
 import { BunnyService } from '../utils/bunny.service';
+import { logger } from '../utils/logger';
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -86,7 +87,7 @@ export const uploadLesson: RequestHandler = async (req, res): Promise<void> => {
     if (bunnyVideoId) {
       // If using Bunny Stream, the URL will be the embed or stream URL
       // For now we just store the ID; the client can use it to build the URL
-      console.log(`🎬 Linking Lesson to Bunny Stream Video: ${bunnyVideoId}`);
+      logger.info(`🎬 Linking Lesson to Bunny Stream Video: ${bunnyVideoId}`);
     } else if (files?.video?.[0]) {
       // Legacy/Direct upload to Bunny Storage
       const videoPath = getBunnyPath(files.video[0]);
@@ -171,7 +172,7 @@ export const uploadLesson: RequestHandler = async (req, res): Promise<void> => {
       },
     });
   } catch (error: any) {
-    console.error('Upload lesson error:', error);
+    logger.error('Upload lesson error:', error);
     res.status(500).json({ error: error.message || 'Failed to upload lesson' });
   }
 };
@@ -224,7 +225,7 @@ export const uploadVideoOnly: RequestHandler = async (req, res): Promise<void> =
       filename: path.basename(videoPath),
     });
   } catch (error: any) {
-    console.error('Video upload error:', error);
+    logger.error('Video upload error:', error);
     res.status(500).json({ error: error.message || 'Failed to upload video' });
   }
 };
@@ -254,7 +255,7 @@ export const uploadThumbnailOnly: RequestHandler = async (req, res): Promise<voi
       filename: path.basename(thumbPath),
     });
   } catch (error: any) {
-    console.error('Thumbnail upload error:', error);
+    logger.error('Thumbnail upload error:', error);
     res.status(500).json({ error: error.message || 'Failed to upload thumbnail' });
   }
 };
@@ -283,7 +284,7 @@ export const uploadPdfOnly: RequestHandler = async (req, res): Promise<void> => 
       filename: path.basename(pdfPath),
     });
   } catch (error: any) {
-    console.error('PDF upload error:', error);
+    logger.error('PDF upload error:', error);
     res.status(500).json({ error: error.message || 'Failed to upload PDF' });
   }
 };
@@ -317,7 +318,7 @@ export const uploadChunk: RequestHandler = async (req, res): Promise<void> => {
     const receivedCount = chunks.filter(c => c !== undefined).length;
 
     if (receivedCount === total) {
-      console.log(`📦 All chunks received for ${fileName}. Assembling and uploading to Bunny...`);
+      logger.info(`📦 All chunks received for ${fileName}. Assembling and uploading to Bunny...`);
       const finalBuffer = Buffer.concat(chunks);
       
       const remotePath = `videos/${Date.now()}-${fileName.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
@@ -337,7 +338,7 @@ export const uploadChunk: RequestHandler = async (req, res): Promise<void> => {
       });
     }
   } catch (error: any) {
-    console.error('Chunk upload error:', error);
+    logger.error('Chunk upload error:', error);
     res.status(500).json({ error: error.message || 'Failed to upload chunk' });
   }
 };

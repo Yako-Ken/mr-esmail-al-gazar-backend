@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import { authMiddleware, AuthUser } from '../middlewares/auth.middleware';
 import { getTeacherEnrollments, updateEnrollmentStatus, getPendingPayments, approvePayment, rejectPayment, getPaymentHistory, enrollStudentByTeacher } from '../controllers/enrollment.controller';
 import { getTeacherStudents, removeStudentEnrollment, getTeacherCoursesForGrading, getCourseAssignments, getCourseQuizzes, getAssignmentSubmissions, updateSubmissionStatus } from '../controllers/student.controller';
+import { logger } from '../utils/logger';
 
 const prisma = new PrismaClient();
 
@@ -65,7 +66,7 @@ export const createTeacher: RequestHandler = async (req, res): Promise<void> => 
       },
     });
   } catch (error) {
-    console.error('Create teacher error:', error);
+    logger.error('Create teacher error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -129,14 +130,14 @@ export const getTeacherStats: RequestHandler = async (req, res): Promise<void> =
       totalLessons: courses.length,
       approvedEnrollments,
     });
-    console.log('Teacher Stats:', {
+    logger.info('Teacher Stats:', {
       totalStudents: uniqueLessonStudents.size,
       totalLessons: courses.length,
       approvedEnrollments,
       ownerId,
     });
   } catch (error) {
-    console.error('Get teacher stats error:', error);
+    logger.error('Get teacher stats error:', error);
     res.status(500).json({ error: 'Failed to fetch stats' });
   }
 };
@@ -197,7 +198,7 @@ export const createAssistant: RequestHandler = async (req, res): Promise<void> =
       },
     });
   } catch (error) {
-    console.error('Create assistant error:', error);
+    logger.error('Create assistant error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -232,7 +233,7 @@ export const getAssistants: RequestHandler = async (req, res): Promise<void> => 
 
     res.json(assistants);
   } catch (error) {
-    console.error('Get assistants error:', error);
+    logger.error('Get assistants error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -264,10 +265,10 @@ export const deleteAssistant: RequestHandler = async (req, res): Promise<void> =
 
     await prisma.user.delete({ where: { id } });
 
-    console.log('Assistant deleted:', { id, name: assistant.name, by: authUser.id });
+    logger.info('Assistant deleted:', { id, name: assistant.name, by: authUser.id });
     res.json({ message: 'Assistant deleted successfully' });
   } catch (error) {
-    console.error('Delete assistant error:', error);
+    logger.error('Delete assistant error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };

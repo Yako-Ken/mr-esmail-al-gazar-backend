@@ -1,5 +1,6 @@
 import { Router, Request, Response, RequestHandler } from 'express';
 import jwt from 'jsonwebtoken';
+import { logger } from '../utils/logger';
 
 const router = Router();
 
@@ -23,7 +24,7 @@ export const logout: RequestHandler = async (req, res): Promise<void> => {
     if (token) {
       // Add to blacklist
       addToBlacklist(token);
-      console.log('Token blacklisted:', token.substring(0, 20) + '...');
+      logger.info('Token blacklisted:', token.substring(0, 20) + '...');
     }
 
     // Also clear any cookies if used
@@ -34,7 +35,7 @@ export const logout: RequestHandler = async (req, res): Promise<void> => {
       blacklisted: !!token 
     });
   } catch (error) {
-    console.error('Logout error:', error);
+    logger.error('Logout error:', error);
     res.status(500).json({ error: 'Logout failed' });
   }
 };

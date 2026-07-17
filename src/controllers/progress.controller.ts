@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
+import { logger } from '../utils/logger';
 
 const prisma = new PrismaClient();
 
@@ -50,7 +51,7 @@ export const updateProgress = async (req: Request, res: Response): Promise<void>
 
     res.json({ success: true, progress });
   } catch (error) {
-    console.error('updateProgress error:', error);
+    logger.error('updateProgress error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };

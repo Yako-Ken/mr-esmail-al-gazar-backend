@@ -1,6 +1,7 @@
 import { Request, Response, RequestHandler } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthUser } from '../middlewares/auth.middleware';
+import { logger } from '../utils/logger';
 
 const prisma = new PrismaClient();
 
@@ -48,7 +49,7 @@ export const markAttendance: RequestHandler = async (req, res): Promise<void> =>
 
     res.json(tracking);
   } catch (error) {
-    console.error('Mark attendance error:', error);
+    logger.error('Mark attendance error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -122,8 +123,8 @@ export const submitQuiz: RequestHandler = async (req, res): Promise<void> => {
     // Both live in the same JSON blob so gradeEssay can SUM all entries for a clean recalculation.
     const answersMap: Record<string, any> = {};
 
-    console.log('DEBUG - Received answers:', JSON.stringify(answers));
-    console.log('DEBUG - Questions:', questions.map((q: any) => `[${q.type}] correctIndex=${q.correctIndex} correctAnswer=${q.correctAnswer}`));
+    logger.info('DEBUG - Received answers:', JSON.stringify(answers));
+    logger.info('DEBUG - Questions:', questions.map((q: any) => `[${q.type}] correctIndex=${q.correctIndex} correctAnswer=${q.correctAnswer}`));
 
     questions.forEach((question: any, index: number) => {
       const qType = (question.type || '').toLowerCase().replace(/[_\s]/g, '');
@@ -138,7 +139,7 @@ export const submitQuiz: RequestHandler = async (req, res): Promise<void> => {
         } else if (rawAnswer && typeof rawAnswer === 'object') {
           essayText = rawAnswer.text || rawAnswer.answerText || rawAnswer.value || '';
         }
-        console.log(`Essay [${index}]: "${essayText}"`);
+        logger.info(`Essay [${index}]: "${essayText}"`);
 
         answersMap[`essay_${index}`] = {
           questionText:  question.question || question.text || '',
@@ -171,7 +172,7 @@ export const submitQuiz: RequestHandler = async (req, res): Promise<void> => {
         const earned = isCorrect ? maxPoints : 0;
         if (isCorrect) { mcqScore += earned; correctCount++; }
 
-        console.log(`MCQ [${index}]: selected=${selectedIndex}, correct=${correctIndex}, earned=${earned}/${maxPoints}`);
+        logger.info(`MCQ [${index}]: selected=${selectedIndex}, correct=${correctIndex}, earned=${earned}/${maxPoints}`);
 
         // Store MCQ answer with score so gradeEssay can SUM all entries
         answersMap[`mcq_${index}`] = {
@@ -193,7 +194,7 @@ export const submitQuiz: RequestHandler = async (req, res): Promise<void> => {
     const score          = mcqScore; // essay scores added after teacher grades
     const answersMapJson = JSON.stringify(answersMap);
 
-    console.log(`✅ Quiz graded: mcqScore=${mcqScore}, hasEssay=${hasEssayQuestions}, hwStatus=${hwStatus}, essayStatus=${essayStatus}`);
+    logger.info(`✅ Quiz graded: mcqScore=${mcqScore}, hasEssay=${hasEssayQuestions}, hwStatus=${hwStatus}, essayStatus=${essayStatus}`);
 
     const tracking = await prisma.tracking.upsert({
       where:  { studentId_lessonId: { studentId, lessonId } },
@@ -209,7 +210,7 @@ export const submitQuiz: RequestHandler = async (req, res): Promise<void> => {
       needsManualGrading: hwStatus === 'PENDING',
     });
   } catch (error) {
-    console.error('Submit quiz error:', error);
+    logger.error('Submit quiz error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -268,7 +269,7 @@ export const fetchStudents: RequestHandler = async (req, res): Promise<void> => 
 
     res.json(Array.from(studentMap.values()));
   } catch (error) {
-    console.error('Fetch students error:', error);
+    logger.error('Fetch students error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -320,15 +321,15 @@ export const getLessons: RequestHandler = async (req, res): Promise<void> => {
 
     res.json(result);
   } catch (error) {
-    console.error('Get lessons error:', error);
+    logger.error('Get lessons error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
 
 export const createLesson: RequestHandler = async (req, res): Promise<void> => {
-  console.log('RECEIVED LESSON DATA:', req.body);
-  console.log('Content-Type:', req.headers['content-type']);
-  console.log('Body keys:', Object.keys(req.body));
+  logger.info('RECEIVED LESSON DATA:', req.body);
+  logger.info('Content-Type:', req.headers['content-type']);
+  logger.info('Body keys:', Object.keys(req.body));
   
   try {
     const { 
@@ -351,10 +352,10 @@ export const createLesson: RequestHandler = async (req, res): Promise<void> => {
     const authUser = (req as Request & { user?: AuthUser }).user;
     const teacherId = authUser?.id;
 
-    console.log('Auth check - teacherId:', teacherId, 'authUser:', authUser);
+    logger.info('Auth check - teacherId:', teacherId, 'authUser:', authUser);
 
     if (!teacherId) {
-      console.error('🚨 VALIDATION FAILED: No teacherId found in auth user');
+      logger.error('🚨 VALIDATION FAILED: No teacherId found in auth user');
       res.status(401).json({ error: 'Unauthorized' });
       return;
     }
@@ -363,10 +364,10 @@ export const createLesson: RequestHandler = async (req, res): Promise<void> => {
     const cleanCourseId = courseId?.toString()?.trim();
     const cleanVideoUrl = videoUrl?.toString()?.trim();
 
-    console.log('Required fields check - title:', cleanTitle, 'courseId:', cleanCourseId, 'videoUrl:', cleanVideoUrl);
+    logger.info('Required fields check - title:', cleanTitle, 'courseId:', cleanCourseId, 'videoUrl:', cleanVideoUrl);
 
     if (!cleanTitle || !cleanCourseId || (!cleanVideoUrl && !bunnyVideoId)) {
-      console.error('🚨 VALIDATION FAILED: Missing required fields (title, courseId, or video/bunnyId)');
+      logger.error('🚨 VALIDATION FAILED: Missing required fields (title, courseId, or video/bunnyId)');
       res.status(400).json({ error: 'Title, courseId, and a video source are required' });
       return;
     }
@@ -377,7 +378,7 @@ export const createLesson: RequestHandler = async (req, res): Promise<void> => {
     });
 
     if (!course) {
-      console.error('🚨 VALIDATION FAILED: Course not found:', cleanCourseId);
+      logger.error('🚨 VALIDATION FAILED: Course not found:', cleanCourseId);
       res.status(400).json({ error: 'Course not found' });
       return;
     }
@@ -405,15 +406,15 @@ export const createLesson: RequestHandler = async (req, res): Promise<void> => {
         parsedQuizData = typeof quizData === 'string' ? JSON.parse(quizData) : quizData;
         quizTitle = parsedQuizData.title || '';
       } catch (e) {
-        console.error('Failed to parse quizData:', e);
+        logger.error('Failed to parse quizData:', e);
       }
     }
 
     const cleanHomeworkPdfUrl = homeworkPdfUrl === '' || homeworkPdfUrl === undefined ? null : (homeworkPdfUrl?.toString() || null);
 
-    console.log('Parsed quizData:', parsedQuizData);
-    console.log('Quiz title:', quizTitle);
-    console.log('isQuizAttached:', isQuizAttached);
+    logger.info('Parsed quizData:', parsedQuizData);
+    logger.info('Quiz title:', quizTitle);
+    logger.info('isQuizAttached:', isQuizAttached);
 
     try {
       const lesson = await prisma.lesson.create({
@@ -448,7 +449,7 @@ export const createLesson: RequestHandler = async (req, res): Promise<void> => {
 
       res.json({ success: true, data: lesson });
     } catch (prismaError: any) {
-      console.error('🔥 PRISMA CREATION ERROR:', prismaError);
+      logger.error('🔥 PRISMA CREATION ERROR:', prismaError);
       res.status(400).json({ 
         success: false, 
         message: prismaError.message || 'Database creation failed',
@@ -456,7 +457,7 @@ export const createLesson: RequestHandler = async (req, res): Promise<void> => {
       });
     }
   } catch (error: any) {
-    console.error('Create lesson error:', error);
+    logger.error('Create lesson error:', error);
     res.status(400).json({ 
       success: false, 
       message: error.message || 'Validation failed', 
@@ -511,7 +512,7 @@ export const updateLesson: RequestHandler = async (req, res): Promise<void> => {
 
     res.json(lesson);
   } catch (error) {
-    console.error('Update lesson error:', error);
+    logger.error('Update lesson error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -552,7 +553,7 @@ export const deleteLesson: RequestHandler = async (req, res): Promise<void> => {
 
     res.json({ message: 'Lesson deleted successfully' });
   } catch (error) {
-    console.error('Delete lesson error:', error);
+    logger.error('Delete lesson error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -628,7 +629,7 @@ export const getLessonById: RequestHandler = async (req, res): Promise<void> => 
       teacher: lesson.teacher,
     });
   } catch (error) {
-    console.error('getLessonById error:', error);
+    logger.error('getLessonById error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };

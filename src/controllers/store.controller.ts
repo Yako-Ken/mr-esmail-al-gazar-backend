@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { AuthUser } from '../middlewares/auth.middleware';
 import path from 'path';
 import fs from 'fs';
+import { logger } from '../utils/logger';
 
 const prisma = new PrismaClient();
 
@@ -29,7 +30,7 @@ export const getStoreCourses: RequestHandler = async (req, res): Promise<void> =
     });
     
     // DEBUG: Log what's being fetched from DB
-    console.log('🔥 DEBUG: Fetched courses from DB:', courses.map(c => ({ id: c.id, title: c.title, description: c.description, grade: c.grade })));
+    logger.info('🔥 DEBUG: Fetched courses from DB:', courses.map(c => ({ id: c.id, title: c.title, description: c.description, grade: c.grade })));
 
     const result = courses.map((c) => ({
       id: c.id,
@@ -46,7 +47,7 @@ export const getStoreCourses: RequestHandler = async (req, res): Promise<void> =
 
     res.json(result);
   } catch (error) {
-    console.error('getStoreCourses error:', error);
+    logger.error('getStoreCourses error:', error);
     res.status(500).json({ error: 'Failed to fetch store courses' });
   }
 };
@@ -112,7 +113,7 @@ export const getStoreCourseById: RequestHandler = async (req, res): Promise<void
           try {
             parsedQuizData = JSON.parse(firstQuiz.questions);
           } catch (e) {
-            console.error('Failed to parse quiz questions:', e);
+            logger.error('Failed to parse quiz questions:', e);
           }
         }
         
@@ -140,7 +141,7 @@ export const getStoreCourseById: RequestHandler = async (req, res): Promise<void
       }),
     });
   } catch (error) {
-    console.error('getStoreCourseById error:', error);
+    logger.error('getStoreCourseById error:', error);
     res.status(500).json({ error: 'Failed to fetch course details' });
   }
 };
@@ -188,7 +189,7 @@ export const getMyPurchasedCourses: RequestHandler = async (req, res): Promise<v
 
     res.json(result);
   } catch (error) {
-    console.error('getMyPurchasedCourses error:', error);
+    logger.error('getMyPurchasedCourses error:', error);
     res.status(500).json({ error: 'Failed to fetch purchased courses' });
   }
 };
@@ -281,7 +282,7 @@ export const submitCheckout: RequestHandler = async (req, res): Promise<void> =>
       });
     }
 
-    console.log(`✅ Checkout: student=${authUser.id} course=${courseId} free=${isFree} status=${enrollmentStatus}`);
+    logger.info(`✅ Checkout: student=${authUser.id} course=${courseId} free=${isFree} status=${enrollmentStatus}`);
 
     res.status(201).json({
       message: isFree
@@ -292,7 +293,7 @@ export const submitCheckout: RequestHandler = async (req, res): Promise<void> =>
       autoApproved: isFree,
     });
   } catch (error) {
-    console.error('submitCheckout error:', error);
+    logger.error('submitCheckout error:', error);
     res.status(500).json({ error: 'Failed to submit checkout' });
   }
 };

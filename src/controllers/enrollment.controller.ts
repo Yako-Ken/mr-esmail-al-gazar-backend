@@ -1,6 +1,7 @@
 import { Request, Response, RequestHandler } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { AuthUser } from '../middlewares/auth.middleware';
+import { logger } from '../utils/logger';
 
 const prisma = new PrismaClient();
 
@@ -61,7 +62,7 @@ export const getTeacherEnrollments: RequestHandler = async (req, res): Promise<v
 
     res.json(result);
   } catch (error) {
-    console.error('getTeacherEnrollments error:', error);
+    logger.error('getTeacherEnrollments error:', error);
     res.status(500).json({ error: 'Failed to fetch enrollments' });
   }
 };
@@ -116,7 +117,7 @@ export const updateEnrollmentStatus: RequestHandler = async (req, res): Promise<
       enrollment: updated,
     });
   } catch (error) {
-    console.error('updateEnrollmentStatus error:', error);
+    logger.error('updateEnrollmentStatus error:', error);
     res.status(500).json({ error: 'Failed to update enrollment status' });
   }
 };
@@ -159,10 +160,10 @@ export const getPendingPayments: RequestHandler = async (req, res): Promise<void
       createdAt: e.createdAt,
     }));
 
-    console.log('Pending payments:', { count: result.length, ownerId });
+    logger.info('Pending payments:', { count: result.length, ownerId });
     res.json(result);
   } catch (error) {
-    console.error('getPendingPayments error:', error);
+    logger.error('getPendingPayments error:', error);
     res.status(500).json({ error: 'Failed to fetch pending payments' });
   }
 };
@@ -208,10 +209,10 @@ export const approvePayment: RequestHandler = async (req, res): Promise<void> =>
       data: { status: 'APPROVED' },
     });
 
-    console.log('Payment APPROVED:', { id, student: enrollment.studentId, course: enrollment.courseId, by: authUser.id });
+    logger.info('Payment APPROVED:', { id, student: enrollment.studentId, course: enrollment.courseId, by: authUser.id });
     res.json({ message: 'Payment approved successfully', enrollment: updated });
   } catch (error) {
-    console.error('approvePayment error:', error);
+    logger.error('approvePayment error:', error);
     res.status(500).json({ error: 'Failed to approve payment' });
   }
 };
@@ -256,10 +257,10 @@ export const getPaymentHistory: RequestHandler = async (req, res): Promise<void>
       updatedAt: e.updatedAt,
     }));
 
-    console.log('Payment history:', { count: result.length, ownerId });
+    logger.info('Payment history:', { count: result.length, ownerId });
     res.json(result);
   } catch (error) {
-    console.error('getPaymentHistory error:', error);
+    logger.error('getPaymentHistory error:', error);
     res.status(500).json({ error: 'Failed to fetch payment history' });
   }
 };
@@ -300,10 +301,10 @@ export const rejectPayment: RequestHandler = async (req, res): Promise<void> => 
       data: { status: 'REJECTED' },
     });
 
-    console.log('Payment REJECTED:', { id, by: authUser.id });
+    logger.info('Payment REJECTED:', { id, by: authUser.id });
     res.json({ message: 'Payment rejected', enrollment: updated });
   } catch (error) {
-    console.error('rejectPayment error:', error);
+    logger.error('rejectPayment error:', error);
     res.status(500).json({ error: 'Failed to reject payment' });
   }
 };
@@ -378,10 +379,10 @@ export const enrollStudentByTeacher: RequestHandler = async (req, res): Promise<
       });
     }
 
-    console.log('Student enrolled by teacher:', { studentId, courseId, by: authUser.id });
+    logger.info('Student enrolled by teacher:', { studentId, courseId, by: authUser.id });
     res.json({ message: 'Student enrolled successfully' });
   } catch (error) {
-    console.error('enrollStudentByTeacher error:', error);
+    logger.error('enrollStudentByTeacher error:', error);
     res.status(500).json({ error: 'Failed to enroll student' });
   }
 };
