@@ -44,7 +44,7 @@ export const listAllCourses = (authUser: AuthUser) => {
   });
 };
 
-export const createCourse = (
+export const createCourse = async (
   authUser: AuthUser,
   input: CourseInput,
   thumbnailRelativePath: string | undefined

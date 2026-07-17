@@ -4,6 +4,7 @@ dist/
 uploads/
 prisma/*.db
 prisma/*.db-journal
+coverage/
 full_project_code.txt
 full_code.txt
 *.log
