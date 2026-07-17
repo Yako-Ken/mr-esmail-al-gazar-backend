@@ -33,19 +33,12 @@ export const listUsersByRole = async (role: string) => {
   return users;
 };
 
+// The Subject catalog model was removed (no code ever created rows in it — this
+// always returned an empty list in practice). Kept as a stub so /api/subjects
+// keeps its existing {message, data: []} contract for the Flutter client, which
+// already falls back to a hardcoded subject list whenever this comes back empty.
 export const listSubjects = async () => {
-  const subjects = await prisma.subject.findMany({
-    select: {
-      id: true,
-      teacherId: true,
-      name: true,
-      code: true,
-    },
-    orderBy: { name: 'asc' },
-  });
-
-  logger.info(`[GET /subjects] Found ${subjects.length} subjects`);
-  return subjects;
+  return [] as Array<{ id: string; teacherId: string; name: string; code: string }>;
 };
 
 export interface ListAllUsersParams {
@@ -221,10 +214,6 @@ export const deleteUserById = async (authUserId: string, userId: string): Promis
   });
 
   await prisma.lesson.deleteMany({
-    where: { teacherId: userId },
-  });
-
-  await prisma.subject.deleteMany({
     where: { teacherId: userId },
   });
 

@@ -136,7 +136,6 @@ export const getCourseById: RequestHandler = async (req, res): Promise<void> => 
           title: l.title,
           thumbnailUrl: toAbsoluteUploadUrl(baseUrl, l.thumbnailUrl),
           videoUrl: l.videoUrl ? toAbsoluteUploadUrl(baseUrl, l.videoUrl) : null,
-          subjectId: l.subjectId,
           createdAt: l.createdAt,
           homeworkPdfUrl: l.homeworkPdfUrl,
           homeworkText: l.homeworkText,

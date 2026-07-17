@@ -30,13 +30,11 @@ model User {
   parentTeacher   User?   @relation("TeacherAssistants", fields: [parentTeacherId], references: [id])
   assistants      User[]  @relation("TeacherAssistants")
 
-  subjects        Subject[]               @relation("TeacherSubjects")
   courses         Course[]                @relation("TeacherCourses")
   lessons         Lesson[]
   studentRelations StudentParentRelation[] @relation("Student")
   parentRelations  StudentParentRelation[] @relation("Parent")
   trackings       Tracking[]
-  enrollments     Enrollment[]            @relation("StudentEnrollments")
   courseEnrollments CourseEnrollment[]    @relation("StudentCourseEnrollments")
   attendanceRecords AttendanceRecord[]    @relation("AttendanceStudent")
   lessonProgresses  LessonProgress[]      @relation("StudentProgress")
@@ -50,17 +48,6 @@ model StudentParentRelation {
   parent    User     @relation("Parent", fields: [parentId], references: [id])
 
   @@unique([studentId, parentId])
-}
-
-model Subject {
-  id        String   @id @default(uuid())
-  teacherId String
-  teacher   User     @relation("TeacherSubjects", fields: [teacherId], references: [id])
-  name      String
-  code      String   @unique
-  // Legacy relation — new lessons use plain subject/grade strings
-  lessons   Lesson[]
-  enrollments Enrollment[] @relation("SubjectEnrollments")
 }
 
 model Course {
@@ -96,22 +83,8 @@ model CourseEnrollment {
   @@unique([studentId, courseId])
 }
 
-model Enrollment {
-  id        String   @id @default(uuid())
-  studentId String
-  student   User     @relation("StudentEnrollments", fields: [studentId], references: [id])
-  subjectId String
-  subject   Subject  @relation("SubjectEnrollments", fields: [subjectId], references: [id])
-  createdAt DateTime @default(now())
-
-  @@unique([studentId, subjectId])
-}
-
 model Lesson {
   id            String   @id @default(uuid())
-  // Legacy FK kept for existing rows — new rows use the plain-text fields below
-  subjectId     String?  
-  subjectRef    Subject? @relation(fields: [subjectId], references: [id])
   // K-12 standard constants (stored as plain strings — no FK)
   subject       String?
   grade         String?

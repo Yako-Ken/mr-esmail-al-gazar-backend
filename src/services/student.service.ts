@@ -20,24 +20,18 @@ export const getStudentDashboard = async (authUser: AuthUser | undefined) => {
   assertStudent(authUser, 'Access denied. Students only.');
   const studentId = authUser!.id;
 
-  const enrollments = await prisma.enrollment.findMany({
-    where: { studentId },
+  // Previously read from the legacy Subject/Enrollment tables, which nothing in
+  // the app ever wrote to - this always returned an empty dashboard. Course/
+  // CourseEnrollment is the system actually used for enrollment everywhere else
+  // (teacher.routes.ts, tracking.routes.ts, enrollment.controller.ts).
+  const courseEnrollments = await prisma.courseEnrollment.findMany({
+    where: { studentId, status: 'APPROVED' },
     include: {
-      subject: {
+      course: {
         include: {
-          teacher: {
-            select: {
-              id: true,
-              name: true,
-            },
-          },
+          teacher: { select: { id: true, name: true } },
           lessons: {
-            select: {
-              id: true,
-              title: true,
-              thumbnailUrl: true,
-              videoUrl: true,
-            },
+            select: { id: true, title: true, thumbnailUrl: true, videoUrl: true },
           },
         },
       },
@@ -49,37 +43,35 @@ export const getStudentDashboard = async (authUser: AuthUser | undefined) => {
   let watchedHours = 0;
 
   const enrolledCourses = await Promise.all(
-    enrollments.map(async (enrollment) => {
-      const subject = enrollment.subject;
-      const lessons = subject.lessons || [];
-      const subjectTotalLessons = lessons.length;
+    courseEnrollments.map(async (enrollment) => {
+      const course = enrollment.course;
+      const lessons = course.lessons || [];
+      const courseTotalLessons = lessons.length;
 
       const trackingRecords = await prisma.tracking.findMany({
         where: {
           studentId,
-          lesson: {
-            subjectId: subject.id,
-          },
+          lesson: { courseId: course.id },
           isPresent: true,
         },
       });
 
       const completedCount = trackingRecords.length;
-      totalLessons += subjectTotalLessons;
+      totalLessons += courseTotalLessons;
       completedLessons += completedCount;
 
-      const progress = subjectTotalLessons > 0
-        ? Math.round((completedCount / subjectTotalLessons) * 100)
+      const progress = courseTotalLessons > 0
+        ? Math.round((completedCount / courseTotalLessons) * 100)
         : 0;
 
       watchedHours += completedCount * 0.5;
 
       return {
-        id: subject.id,
-        name: subject.name,
-        code: subject.code,
-        teacherName: subject.teacher?.name || 'Unknown',
-        totalLessons: subjectTotalLessons,
+        id: course.id,
+        name: course.title,
+        code: course.id,
+        teacherName: course.teacher?.name || 'Unknown',
+        totalLessons: courseTotalLessons,
         completedLessons: completedCount,
         progress: progress,
         thumbnailUrl: lessons[0]?.thumbnailUrl,
