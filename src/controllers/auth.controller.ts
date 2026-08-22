@@ -7,6 +7,7 @@ import crypto from 'crypto';
 import { logger } from '../utils/logger';
 import { env } from '../utils/env';
 import { generateOtp, hashOtp, hashResetToken, secureDigestEqual } from '../utils/otp';
+import { createUserSession } from '../services/session.service';
 
 const prisma = new PrismaClient();
 
@@ -50,8 +51,15 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
+    const session = await createUserSession(prisma, req, user.id);
     const token = jwt.sign(
-      { id: user.id, phone: user.phone, role: user.role, sv: user.sessionVersion },
+      {
+        id: user.id,
+        phone: user.phone,
+        role: user.role,
+        sv: user.sessionVersion,
+        sid: session.id,
+      },
       env.JWT_SECRET,
       { expiresIn: '7d' }
     );
@@ -122,7 +130,7 @@ export const register = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword = await bcrypt.hash(password, 12);
 
     const user = await prisma.user.create({
       data: {
@@ -142,8 +150,15 @@ export const register = async (req: Request, res: Response): Promise<void> => {
     // A verified StudentParentRelation must be created by the linking flow.
 
     // Issue JWT immediately so the client is authenticated without a separate login.
+    const session = await createUserSession(prisma, req, user.id);
     const token = jwt.sign(
-      { id: user.id, phone: user.phone, role: user.role, sv: user.sessionVersion },
+      {
+        id: user.id,
+        phone: user.phone,
+        role: user.role,
+        sv: user.sessionVersion,
+        sid: session.id,
+      },
       env.JWT_SECRET,
       { expiresIn: '7d' }
     );
@@ -290,13 +305,20 @@ export const changePassword = async (req: Request, res: Response): Promise<void>
     }
 
     const hashedPassword = await bcrypt.hash(newPassword, 12);
-    await prisma.user.update({
-      where: { id: authUser.id },
-      data: {
-        password: hashedPassword,
-        sessionVersion: { increment: 1 },
-      },
-    });
+    const revokedAt = new Date();
+    await prisma.$transaction([
+      prisma.user.update({
+        where: { id: authUser.id },
+        data: {
+          password: hashedPassword,
+          sessionVersion: { increment: 1 },
+        },
+      }),
+      prisma.userSession.updateMany({
+        where: { userId: authUser.id, revokedAt: null },
+        data: { revokedAt },
+      }),
+    ]);
 
     res.json({ message: 'Password changed successfully. Please sign in again on every device.' });
   } catch (error) {
@@ -450,6 +472,10 @@ export const resetPassword = async (req: Request, res: Response): Promise<void> 
         },
       }),
       prisma.passwordResetOTP.deleteMany({ where: { studentPhone: account.phone } }),
+      prisma.userSession.updateMany({
+        where: { userId: account.id, revokedAt: null },
+        data: { revokedAt: new Date() },
+      }),
     ]);
 
     res.json({ message: 'Password reset successful. Please sign in again on every device.' });

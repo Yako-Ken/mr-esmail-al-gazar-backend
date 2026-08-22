@@ -14,6 +14,7 @@ export interface AuthUser {
   isApproved: boolean;
   status: string;
   parentTeacherId: string | null;
+  sessionId: string | null;
 }
 
 declare global {
@@ -67,12 +68,12 @@ export const authMiddleware: RequestHandler = async (
     }
 
     // Dev-only trace: never reaches production logs (logger.debug is a no-op when NODE_ENV=production)
-    logger.debug('Verifying token ->', token.substring(0, 20) + '...');
+    logger.debug('Verifying authentication token');
 
     let decoded: jwt.JwtPayload;
     try {
       decoded = jwt.verify(token, env.JWT_SECRET) as jwt.JwtPayload;
-      logger.debug('Token verified for user:', decoded.phone, 'role:', decoded.role);
+      logger.debug('Authentication token verified for role:', decoded.role);
     } catch (jwtError) {
       const errorMessage = jwtError instanceof Error ? jwtError.message : String(jwtError);
       logger.debug('Token verification failed:', errorMessage);
@@ -113,6 +114,33 @@ export const authMiddleware: RequestHandler = async (
       return;
     }
 
+    let sessionId: string | null = null;
+    if (decoded.sid !== undefined) {
+      if (typeof decoded.sid !== 'string' || !decoded.sid) {
+        res.status(401).json({ error: 'Invalid session identifier' });
+        return;
+      }
+      const session = await prisma.userSession.findFirst({
+        where: {
+          id: decoded.sid,
+          userId: user.id,
+          revokedAt: null,
+          expiresAt: { gt: new Date() },
+        },
+      });
+      if (!session) {
+        res.status(401).json({ error: 'Session has expired or been revoked.' });
+        return;
+      }
+      sessionId = session.id;
+      if (session.lastSeenAt.getTime() < Date.now() - 5 * 60 * 1000) {
+        await prisma.userSession.update({
+          where: { id: session.id },
+          data: { lastSeenAt: new Date() },
+        });
+      }
+    }
+
     req.user = {
       id: user.id,
       phone: user.phone,
@@ -120,6 +148,7 @@ export const authMiddleware: RequestHandler = async (
       status: user.status,
       isApproved: user.isApproved,
       parentTeacherId: user.parentTeacherId,
+      sessionId,
     };
 
     next();
@@ -186,6 +215,27 @@ export const optionalAuthMiddleware: RequestHandler = async (
     });
 
     if (user && user.isApproved && Number.isInteger(decoded.sv) && decoded.sv === user.sessionVersion) {
+      let sessionId: string | null = null;
+      if (decoded.sid !== undefined) {
+        if (typeof decoded.sid !== 'string' || !decoded.sid) {
+          next();
+          return;
+        }
+        const session = await prisma.userSession.findFirst({
+          where: {
+            id: decoded.sid,
+            userId: user.id,
+            revokedAt: null,
+            expiresAt: { gt: new Date() },
+          },
+          select: { id: true },
+        });
+        if (!session) {
+          next();
+          return;
+        }
+        sessionId = session.id;
+      }
       req.user = {
         id: user.id,
         phone: user.phone,
@@ -193,6 +243,7 @@ export const optionalAuthMiddleware: RequestHandler = async (
         status: user.status,
         isApproved: user.isApproved,
         parentTeacherId: user.parentTeacherId,
+        sessionId,
       };
     }
 

@@ -12,6 +12,7 @@ const makeAuthUser = (overrides: Partial<AuthUser> = {}): AuthUser => ({
   isApproved: true,
   status: 'approved',
   parentTeacherId: null,
+  sessionId: null,
   ...overrides,
 });
 

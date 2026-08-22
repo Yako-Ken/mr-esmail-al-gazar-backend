@@ -60,7 +60,14 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Requested-With',
+    'X-Device-Name',
+    'Accept',
+    'Origin',
+  ],
 }));
 
 // 2. BODY PARSERS (before routes). File uploads go through multer (memory storage,

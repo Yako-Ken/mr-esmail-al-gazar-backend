@@ -41,6 +41,22 @@ model User {
   lessonProgresses  LessonProgress[]      @relation("StudentProgress")
   notifications    Notification[]
   pushTokens       PushToken[]
+  sessions         UserSession[]
+}
+
+model UserSession {
+  id         String    @id @default(uuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deviceName String
+  userAgent  String?
+  ipHint     String?
+  createdAt  DateTime  @default(now())
+  lastSeenAt DateTime  @default(now())
+  expiresAt  DateTime
+  revokedAt  DateTime?
+
+  @@index([userId, revokedAt, expiresAt])
 }
 
 model StudentParentRelation {

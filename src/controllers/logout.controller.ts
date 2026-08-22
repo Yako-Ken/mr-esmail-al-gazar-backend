@@ -1,8 +1,9 @@
 import { Router, Request, Response, RequestHandler } from 'express';
-import jwt from 'jsonwebtoken';
+import { PrismaClient } from '@prisma/client';
 import { logger } from '../utils/logger';
 
 const router = Router();
+const prisma = new PrismaClient();
 
 // Simple in-memory token blacklist (for production, use Redis or database)
 const tokenBlacklist: Set<string> = new Set();
@@ -21,18 +22,24 @@ export const logout: RequestHandler = async (req, res): Promise<void> => {
     const authHeader = req.headers.authorization;
     const token = authHeader?.split(' ')[1];
     
-    if (token) {
-      // Add to blacklist
+    const sessionId = req.user?.sessionId;
+    if (sessionId) {
+      await prisma.userSession.updateMany({
+        where: { id: sessionId, userId: req.user?.id, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+    } else if (token) {
+      // Compatibility for JWTs issued before persistent sessions existed.
       addToBlacklist(token);
-      logger.info('Token blacklisted:', token.substring(0, 20) + '...');
     }
+    logger.info('Logout completed', { userId: req.user?.id, persistent: !!sessionId });
 
     // Also clear any cookies if used
     res.clearCookie('token');
 
     res.json({ 
       message: 'Logged out successfully',
-      blacklisted: !!token 
+      revoked: !!sessionId || !!token 
     });
   } catch (error) {
     logger.error('Logout error:', error);
