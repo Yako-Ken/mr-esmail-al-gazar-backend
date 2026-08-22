@@ -13,6 +13,7 @@ export interface CourseInput {
   subject?: string;
   grade?: string;
   thumbnailUrl?: string;
+  isPublished?: boolean | string;
 }
 
 const assertOwnerOrAdmin = (courseTeacherId: string, authUser: AuthUser): void => {
@@ -67,6 +68,8 @@ export const createCourse = async (
       subject: input.subject?.trim() ?? null,
       grade: input.grade?.trim() ?? null,
       price: parsedPrice,
+      priceMinor: Math.round(parsedPrice * 100),
+      currency: 'EGP',
       thumbnailUrl: thumbnailRelativePath ?? null,
     },
   });
@@ -98,11 +101,25 @@ export const updateCourse = async (id: string, authUser: AuthUser, input: Course
   if (input.description !== undefined) updateData.description = input.description.trim();
   if (input.price !== undefined) {
     const parsed = parseFloat(input.price);
-    if (!isNaN(parsed) && parsed >= 0) updateData.price = parsed;
+    if (isNaN(parsed) || parsed < 0) throw new BadRequestError('Invalid course price');
+    updateData.price = parsed;
+    updateData.priceMinor = Math.round(parsed * 100);
+    updateData.currency = 'EGP';
   }
   if (input.subject !== undefined) updateData.subject = input.subject.trim();
   if (input.grade !== undefined) updateData.grade = input.grade.trim();
   if (input.thumbnailUrl !== undefined) updateData.thumbnailUrl = input.thumbnailUrl.trim();
+  if (input.isPublished !== undefined) {
+    const shouldPublish = input.isPublished === true || input.isPublished === 'true';
+    if (shouldPublish) {
+      const lessonCount = await prisma.lesson.count({ where: { courseId: id } });
+      if (lessonCount === 0) {
+        throw new BadRequestError('Add at least one lesson before publishing the course');
+      }
+    }
+    updateData.isPublished = shouldPublish;
+    updateData.publishedAt = shouldPublish ? new Date() : null;
+  }
 
   const updated = await prisma.course.update({ where: { id }, data: updateData });
   logger.info('Course updated:', { id: updated.id, title: updated.title, by: authUser.id });

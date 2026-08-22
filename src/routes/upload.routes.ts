@@ -1,11 +1,14 @@
 import express, { Request, Response, RequestHandler } from 'express';
 import multer from 'multer';
 import path from 'path';
+import fs from 'fs';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthUser } from '../middlewares/auth.middleware';
 import { checkTeacherApproval } from '../middlewares/role.middleware';
 import { BunnyService } from '../utils/bunny.service';
+import { env } from '../utils/env';
 import { logger } from '../utils/logger';
+import { createBunnyTusTicket } from '../utils/bunnyTus';
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -81,12 +84,21 @@ export const uploadLesson: RequestHandler = async (req, res): Promise<void> => {
 
     const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
 
-    // We now support either a direct video file or a Bunny Stream ID
+    // We support either a direct video file (Storage) or a Bunny Stream upload ticket.
+    // In BOTH cases a playable URL must reach the DB — previously a stream-only upload
+    // saved videoUrl=null, which made the lesson appear to have "no video" to students.
     let videoUrl = '';
-    
+
     if (bunnyVideoId) {
-      // If using Bunny Stream, the URL will be the embed or stream URL
-      // For now we just store the ID; the client can use it to build the URL
+      const libraryId = videoLibraryId || env.BUNNY_STREAM_LIBRARY_ID;
+      if (!libraryId) {
+        logger.error('Upload rejected: bunnyVideoId supplied but no stream library id is configured');
+        res.status(400).json({ error: 'Bunny Stream library id is not configured (BUNNY_STREAM_LIBRARY_ID).' });
+        return;
+      }
+      // Store only the Stream identifiers. Playback URLs are derived and signed
+      // by the protected playback endpoint, never persisted as iframe URLs.
+      videoUrl = '';
       logger.info(`🎬 Linking Lesson to Bunny Stream Video: ${bunnyVideoId}`);
     } else if (files?.video?.[0]) {
       // Legacy/Direct upload to Bunny Storage
@@ -187,14 +199,27 @@ export const getUploadTicket: RequestHandler = async (req, res): Promise<void> =
     }
 
     const { guid, libraryId } = await BunnyService.createStreamVideo(title);
+    const apiKey = env.BUNNY_STREAM_API_KEY;
+    if (!apiKey) {
+      res.status(503).json({
+        error: 'Bunny Stream upload signing is not configured',
+        code: 'BUNNY_UPLOAD_NOT_CONFIGURED',
+      });
+      return;
+    }
+    const ticket = createBunnyTusTicket({
+      libraryId,
+      videoId: guid,
+      apiKey,
+    });
 
     res.status(200).json({
       success: true,
       guid,
       libraryId,
       collectionId: collectionId || null,
-      tusEndpoint: 'https://video.bunnycdn.com/tusupload', // Standard Bunny TUS endpoint
-      accessKey: process.env.BUNNY_STREAM_API_KEY,
+      tusEndpoint: 'https://video.bunnycdn.com/tusupload',
+      ...ticket,
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -289,11 +314,37 @@ export const uploadPdfOnly: RequestHandler = async (req, res): Promise<void> => 
   }
 };
 
-// ─── Chunked Upload Endpoint ───────────────────────────────────────────────
-// For memory storage, we assemble chunks in a Buffer or handle differently.
-// Note: This implementation stores chunks in memory, which is risky for huge files.
-// For extremely large files, using a temporary local disk and then uploading to Bunny is better.
-const chunkMap = new Map<string, Buffer[]>();
+// ─── Chunked Upload Endpoint (disk-based) ───────────────────────────────────
+// Chunks are written to per-upload temp dirs on disk — NOT kept in process memory.
+// Previous implementation held every chunk in a Map<string, Buffer[]>, which let a few
+// concurrent uploads OOM the whole server. Chunk files are also cleaned up by the
+// daily cleanupOrphanedFiles cron via the 24h-age rule below.
+const CHUNK_ROOT = path.join(process.cwd(), 'uploads', 'temp', 'chunks');
+const MAX_CHUNK_BYTES = 50 * 1024 * 1024; // hard ceiling per chunk, enforced before multer
+const MAX_TOTAL_CHUNKS = 2000;            // 2000 x 5MB = ~10GB max upload
+const CHUNK_TTL_MS = 24 * 60 * 60 * 1000; // orphan chunks older than this are deletable
+
+const sanitizeUploadKey = (raw: string): string =>
+  raw.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120);
+
+// Best-effort orphan reaper — runs on each completed upload so dirs can't pile up forever
+// even between cron runs. Never throws.
+const reapStaleChunkDirs = (): void => {
+  try {
+    if (!fs.existsSync(CHUNK_ROOT)) return;
+    const now = Date.now();
+    for (const entry of fs.readdirSync(CHUNK_ROOT)) {
+      const dir = path.join(CHUNK_ROOT, entry);
+      try {
+        const stat = fs.statSync(dir);
+        if (stat.isDirectory() && now - stat.mtimeMs > CHUNK_TTL_MS) {
+          fs.rmSync(dir, { recursive: true, force: true });
+          logger.info(`🧹 Reaped stale chunk dir: ${entry}`);
+        }
+      } catch { /* skip */ }
+    }
+  } catch { /* skip */ }
+};
 
 export const uploadChunk: RequestHandler = async (req, res): Promise<void> => {
   try {
@@ -305,38 +356,63 @@ export const uploadChunk: RequestHandler = async (req, res): Promise<void> => {
 
     const idx = parseInt(chunkIndex);
     const total = parseInt(totalChunks);
-    const key = fileName;
 
-    if (!chunkMap.has(key)) {
-      chunkMap.set(key, new Array(total));
+    if (!Number.isInteger(idx) || !Number.isInteger(total) || idx < 0 || idx >= total) {
+      res.status(400).json({ error: 'Invalid chunkIndex/totalChunks' });
+      return;
+    }
+    if (total > MAX_TOTAL_CHUNKS) {
+      res.status(400).json({ error: `totalChunks exceeds max of ${MAX_TOTAL_CHUNKS}` });
+      return;
     }
 
-    const chunks = chunkMap.get(key)!;
-    chunks[idx] = req.file.buffer;
+    const key = sanitizeUploadKey(String(fileName));
+    const uploadDir = path.join(CHUNK_ROOT, key);
+    fs.mkdirSync(uploadDir, { recursive: true });
 
-    // Check if all chunks are received
-    const receivedCount = chunks.filter(c => c !== undefined).length;
+    const chunkPath = path.join(uploadDir, `${String(idx).padStart(6, '0')}.part`);
+    fs.writeFileSync(chunkPath, req.file.buffer);
 
-    if (receivedCount === total) {
-      logger.info(`📦 All chunks received for ${fileName}. Assembling and uploading to Bunny...`);
-      const finalBuffer = Buffer.concat(chunks);
-      
-      const remotePath = `videos/${Date.now()}-${fileName.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
-      const videoUrl = await BunnyService.uploadFile(finalBuffer, remotePath);
-      
-      chunkMap.delete(key); // Cleanup
+    // Have we received every chunk?
+    const received = fs.readdirSync(uploadDir).filter((f) => f.endsWith('.part')).length;
 
-      res.status(200).json({
-        success: true,
-        url: videoUrl,
-        message: 'Chunked upload completed to Bunny.net',
-      });
-    } else {
-      res.status(200).json({
-        success: true,
-        message: `Chunk ${idx + 1}/${total} received`,
-      });
+    if (received < total) {
+      res.status(200).json({ success: true, message: `Chunk ${idx + 1}/${total} received` });
+      return;
     }
+
+    // All chunks present — assemble from disk to the final temp file
+    logger.info(`📦 All ${total} chunks received for ${key}. Assembling and uploading to Bunny...`);
+    const finalPath = path.join(uploadDir, 'assembled.bin');
+    const out = fs.createWriteStream(finalPath);
+    for (let i = 0; i < total; i++) {
+      const p = path.join(uploadDir, `${String(i).padStart(6, '0')}.part`);
+      if (!fs.existsSync(p)) {
+        out.destroy();
+        fs.rmSync(finalPath, { force: true });
+        res.status(400).json({ error: `Chunk ${i} missing during assembly` });
+        return;
+      }
+      out.write(fs.readFileSync(p));
+    }
+    out.end();
+    await new Promise<void>((resolve, reject) => {
+      out.on('finish', () => resolve());
+      out.on('error', reject);
+    });
+
+    const finalBuffer = fs.readFileSync(finalPath);
+    const remotePath = `videos/${Date.now()}-${key}`;
+    const videoUrl = await BunnyService.uploadFile(finalBuffer, remotePath);
+
+    fs.rmSync(uploadDir, { recursive: true, force: true });
+    reapStaleChunkDirs();
+
+    res.status(200).json({
+      success: true,
+      url: videoUrl,
+      message: 'Chunked upload completed to Bunny.net',
+    });
   } catch (error: any) {
     logger.error('Chunk upload error:', error);
     res.status(500).json({ error: error.message || 'Failed to upload chunk' });
@@ -355,7 +431,7 @@ router.post('/', authMiddleware, checkTeacherApproval, upload.fields([
   { name: 'pdf', maxCount: 1 },
 ]), uploadLesson);
 
-router.post('/chunk', upload.single('chunk'), uploadChunk);
+router.post('/chunk', authMiddleware, checkTeacherApproval, upload.single('chunk'), uploadChunk);
 
 export default router;
 

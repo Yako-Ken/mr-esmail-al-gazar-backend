@@ -44,6 +44,9 @@ describe('course.service', () => {
       expect(course.title).toBe('Algebra 101');
       expect(course.teacherId).toBe(teacherId);
       expect(course.price).toBe(100);
+      expect(course.priceMinor).toBe(10000);
+      expect(course.currency).toBe('EGP');
+      expect(course.isPublished).toBe(false);
     });
 
     it('rejects a missing title', async () => {
@@ -87,6 +90,23 @@ describe('course.service', () => {
     it('throws NotFoundError for a nonexistent course id', async () => {
       const authUser = makeAuthUser({ id: teacherId });
       await expect(courseService.updateCourse('does-not-exist', authUser, { title: 'x' })).rejects.toBeInstanceOf(NotFoundError);
+    });
+
+    it('does not publish an empty course and publishes after a lesson exists', async () => {
+      const authUser = makeAuthUser({ id: teacherId });
+      const course = await courseService.createCourse(authUser, { title: 'Publication Gate' }, undefined);
+      await expect(
+        courseService.updateCourse(course.id, authUser, { isPublished: true }),
+      ).rejects.toBeInstanceOf(BadRequestError);
+
+      await prisma.lesson.create({
+        data: { courseId: course.id, teacherId, title: 'First lesson' },
+      });
+      const published = await courseService.updateCourse(course.id, authUser, {
+        isPublished: true,
+      });
+      expect(published.isPublished).toBe(true);
+      expect(published.publishedAt).not.toBeNull();
     });
   });
 

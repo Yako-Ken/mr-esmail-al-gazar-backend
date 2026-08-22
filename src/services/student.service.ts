@@ -31,7 +31,7 @@ export const getStudentDashboard = async (authUser: AuthUser | undefined) => {
         include: {
           teacher: { select: { id: true, name: true } },
           lessons: {
-            select: { id: true, title: true, thumbnailUrl: true, videoUrl: true },
+            select: { id: true, title: true, thumbnailUrl: true },
           },
         },
       },

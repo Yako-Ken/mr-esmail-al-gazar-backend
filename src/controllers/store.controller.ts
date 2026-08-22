@@ -1,8 +1,6 @@
 import { Request, Response, RequestHandler } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { AuthUser } from '../middlewares/auth.middleware';
-import path from 'path';
-import fs from 'fs';
 import { logger } from '../utils/logger';
 
 const prisma = new PrismaClient();
@@ -22,15 +20,17 @@ export const getStoreCourses: RequestHandler = async (req, res): Promise<void> =
     const baseUrl = `${req.protocol}://${req.get('host')}`;
 
     const courses = await prisma.course.findMany({
+      where: {
+        isPublished: true,
+        lessons: { some: {} },
+        teacher: { isApproved: true },
+      },
       orderBy: { createdAt: 'desc' },
       include: {
         teacher: { select: { id: true, name: true } },
         _count: { select: { lessons: true } },
       },
     });
-    
-    // DEBUG: Log what's being fetched from DB
-    logger.info('🔥 DEBUG: Fetched courses from DB:', courses.map(c => ({ id: c.id, title: c.title, description: c.description, grade: c.grade })));
 
     const result = courses.map((c) => ({
       id: c.id,
@@ -39,6 +39,8 @@ export const getStoreCourses: RequestHandler = async (req, res): Promise<void> =
       subject: c.subject ?? null,
       grade: c.grade ?? null,
       price: c.price,
+      priceMinor: c.priceMinor > 0 ? c.priceMinor : Math.round(c.price * 100),
+      currency: c.currency,
       thumbnailUrl: formatUrl(baseUrl, c.thumbnailUrl),
       teacherName: c.teacher.name,
       teacherId: c.teacher.id,
@@ -63,17 +65,15 @@ export const getStoreCourseById: RequestHandler = async (req, res): Promise<void
     const authUser = (req as Request & { user?: AuthUser }).user;
     const baseUrl = `${req.protocol}://${req.get('host')}`;
 
-    const course = await prisma.course.findUnique({
-      where: { id },
+    const course = await prisma.course.findFirst({
+      where: {
+        id,
+        isPublished: true,
+        lessons: { some: {} },
+        teacher: { isApproved: true },
+      },
       include: {
-        teacher: { 
-          select: { 
-            id: true, 
-            name: true, 
-            vodafoneCashNumber: true, 
-            instapayHandle: true 
-          } 
-        },
+        teacher: { select: { id: true, name: true } },
         lessons: {
           include: { quizzes: true },
           orderBy: { createdAt: 'asc' },
@@ -102,43 +102,21 @@ export const getStoreCourseById: RequestHandler = async (req, res): Promise<void
       subject: course.subject ?? null,
       grade: course.grade ?? null,
       price: course.price,
+      priceMinor: course.priceMinor > 0 ? course.priceMinor : Math.round(course.price * 100),
+      currency: course.currency,
       thumbnailUrl: formatUrl(baseUrl, course.thumbnailUrl),
       teacher: course.teacher,
       isOwned,
-      lessons: course.lessons.map((l) => {
-        const firstQuiz = l.quizzes && l.quizzes.length > 0 ? l.quizzes[0] : null;
-        
-        let parsedQuizData: any = null;
-        if (firstQuiz?.questions != null) {
-          try {
-            parsedQuizData = JSON.parse(firstQuiz.questions);
-          } catch (e) {
-            logger.error('Failed to parse quiz questions:', e);
-          }
-        }
-        
-        return {
-          id: l.id,
-          title: l.title,
-          thumbnailUrl: formatUrl(baseUrl, l.thumbnailUrl),
-          description: l.description,
-          isLocked: !isOwned,
-          homeworkPdfUrl: l.homeworkPdfUrl,
-          homeworkText: l.homeworkText,
-          hasQuiz: firstQuiz !== null,
-          quizId: firstQuiz?.id ?? null,
-          quiz: firstQuiz ? {
-            id: firstQuiz.id,
-            title: parsedQuizData != null ? (parsedQuizData['title'] || 'Untitled Quiz') : 'Untitled Quiz',
-            questions: parsedQuizData != null && parsedQuizData['questions'] != null 
-                ? parsedQuizData['questions'] 
-                : [],
-            timeLimitMinutes: parsedQuizData != null && parsedQuizData['timeLimit'] != null 
-                ? parsedQuizData['timeLimit'] 
-                : 30,
-          } : null,
-        };
-      }),
+      lessons: course.lessons.map((lesson) => ({
+        id: lesson.id,
+        title: lesson.title,
+        thumbnailUrl: formatUrl(baseUrl, lesson.thumbnailUrl),
+        description: lesson.description,
+        isLocked: !isOwned,
+        hasVideo: Boolean(lesson.videoUrl || lesson.bunnyVideoId),
+        hasHomework: Boolean(lesson.homeworkText || lesson.homeworkPdfUrl),
+        hasQuiz: lesson.quizzes.length > 0,
+      })),
     });
   } catch (error) {
     logger.error('getStoreCourseById error:', error);
@@ -181,6 +159,8 @@ export const getMyPurchasedCourses: RequestHandler = async (req, res): Promise<v
       subject: e.course.subject ?? null,
       grade: e.course.grade ?? null,
       price: e.course.price,
+      priceMinor: e.course.priceMinor > 0 ? e.course.priceMinor : Math.round(e.course.price * 100),
+      currency: e.course.currency,
       thumbnailUrl: formatUrl(baseUrl, e.course.thumbnailUrl),
       teacherName: e.course.teacher.name,
       lessonCount: e.course._count.lessons,
@@ -207,90 +187,57 @@ export const submitCheckout: RequestHandler = async (req, res): Promise<void> =>
       return;
     }
 
-    const { courseId, paymentMethod } = req.body as { courseId?: string; paymentMethod?: string };
-
+    const { courseId } = req.body as { courseId?: string };
     if (!courseId) {
       res.status(400).json({ error: 'courseId is required' });
       return;
     }
 
-    // ── Fetch course first so we know if it's free ────────────────────────
     const course = await prisma.course.findUnique({ where: { id: courseId } });
     if (!course) {
       res.status(404).json({ error: 'Course not found' });
       return;
     }
 
-    const isFree = course.price === 0;
-
-    // ── Validate payment info ONLY for paid courses ───────────────────────
-    if (!isFree) {
-      if (!paymentMethod) {
-        res.status(400).json({ error: 'paymentMethod is required for paid courses' });
-        return;
-      }
-      const allowedMethods = ['VODAFONE_CASH', 'INSTAPAY', 'FREE'];
-      if (!allowedMethods.includes(paymentMethod.toUpperCase())) {
-        res.status(400).json({ error: 'paymentMethod must be VODAFONE_CASH or INSTAPAY' });
-        return;
-      }
-    }
-
-    // ── Guard against duplicate enrollment ────────────────────────────────
-    const existing = await prisma.courseEnrollment.findUnique({
-      where: { studentId_courseId: { studentId: authUser.id, courseId } },
-    });
-
-    if (existing && (existing.status === 'PENDING' || existing.status === 'APPROVED')) {
-      res.status(409).json({
-        error: 'You already have a pending or approved enrollment for this course',
-        status: existing.status,
-        autoApproved: existing.status === 'APPROVED',
+    const amountMinor = course.priceMinor > 0 ? course.priceMinor : Math.round(course.price * 100);
+    if (amountMinor > 0) {
+      res.status(410).json({
+        error: 'Manual receipts are no longer accepted. Start a hosted payment intention.',
+        code: 'USE_PAYMENT_INTENTION',
       });
       return;
     }
 
-    // ── Build enrollment data ─────────────────────────────────────────────
-    const file = req.file;
-    const receiptImageUrl = file ? `/receipts/${file.filename}` : null;
-
-    // Free courses → immediately APPROVED; paid → PENDING for manual review
-    const enrollmentStatus = isFree ? 'APPROVED' : 'PENDING';
-    const resolvedPaymentMethod = isFree ? 'FREE' : (paymentMethod ?? '').toUpperCase();
-
-    let enrollment;
-
-    if (existing && existing.status === 'REJECTED') {
-      // Re-submission on a previously rejected paid enrollment
-      enrollment = await prisma.courseEnrollment.update({
-        where: { id: existing.id },
-        data: {
-          paymentMethod: resolvedPaymentMethod,
-          receiptImageUrl: receiptImageUrl ?? existing.receiptImageUrl,
-          status: enrollmentStatus,
-        },
-      });
-    } else {
-      enrollment = await prisma.courseEnrollment.create({
-        data: {
-          studentId: authUser.id,
-          courseId,
-          paymentMethod: resolvedPaymentMethod,
-          receiptImageUrl,
-          status: enrollmentStatus,
-        },
-      });
+    const existing = await prisma.courseEnrollment.findUnique({
+      where: { studentId_courseId: { studentId: authUser.id, courseId } },
+    });
+    if (existing?.status === 'APPROVED') {
+      res.status(409).json({ error: 'Course is already owned.', status: existing.status, autoApproved: true });
+      return;
     }
 
-    logger.info(`✅ Checkout: student=${authUser.id} course=${courseId} free=${isFree} status=${enrollmentStatus}`);
+    const enrollment = await prisma.courseEnrollment.upsert({
+      where: { studentId_courseId: { studentId: authUser.id, courseId } },
+      create: {
+        studentId: authUser.id,
+        courseId,
+        paymentMethod: 'FREE',
+        status: 'APPROVED',
+      },
+      update: { paymentMethod: 'FREE', receiptImageUrl: null, status: 'APPROVED' },
+    });
+    await prisma.courseEntitlement.upsert({
+      where: { studentId_courseId: { studentId: authUser.id, courseId } },
+      create: { studentId: authUser.id, courseId, status: 'ACTIVE' },
+      update: { status: 'ACTIVE', revokedAt: null },
+    });
 
+    logger.info('Free enrollment granted', { studentId: authUser.id, courseId });
     res.status(201).json({
-      message: isFree
-        ? 'تم الاشتراك المجاني بنجاح! يمكنك الآن الوصول إلى جميع الدروس'
-        : 'تم إرسال طلبك بنجاح، جاري المراجعة',
+      message: 'تم الاشتراك المجاني بنجاح! يمكنك الآن الوصول إلى جميع الدروس',
       enrollmentId: enrollment.id,
       status: enrollment.status,
-      autoApproved: isFree,
+      autoApproved: true,
     });
   } catch (error) {
     logger.error('submitCheckout error:', error);

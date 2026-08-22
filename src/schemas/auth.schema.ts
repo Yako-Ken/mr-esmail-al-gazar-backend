@@ -12,35 +12,61 @@ export const loginSchema = z.object({
 
 export const registerSchema = z.object({
   name: z.string().trim().min(2, 'Name must be at least 2 characters'),
-  phone: z.string().trim().min(8, 'Phone must be a valid phone number'),
-  password: z.string().min(6, 'Password must be at least 6 characters'),
-  role: z.enum(['STUDENT', 'TEACHER', 'PARENT', 'ADMIN']).optional(),
-  parentPhone: z.string().trim().optional(),
-  deviceId: z.string().trim().optional(),
+  phone: z.string().trim().regex(/^01[0125]\d{8}$/, 'Phone must be a valid Egyptian mobile number'),
+  email: z.string().trim().email('A valid email is required').max(254),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
+  // Public registration is intentionally limited to customer roles. Teachers,
+  // assistants and administrators are provisioned by an authenticated admin.
+  role: z.enum(['STUDENT', 'PARENT']).default('STUDENT'),
+  parentPhone: z.string().trim().regex(/^01[0125]\d{8}$/).optional(),
+  deviceId: z.string().trim().max(200).optional(),
 });
 
 export const changePasswordSchema = z.object({
   oldPassword: z.string().min(1, 'Old password is required'),
-  newPassword: z.string().min(6, 'New password must be at least 6 characters'),
+  newPassword: z.string().min(8, 'New password must be at least 8 characters'),
 });
 
+// `studentPhone` remains as a temporary compatibility alias for installed demo
+// builds. The server ignores caller-supplied email/parent details and always
+// sends to the verified email stored on the matched account.
 export const forgotPasswordRequestSchema = z.object({
-  studentPhone: z.string().trim().min(8),
-  parentPhone: z.string().trim().min(8),
-  email: z.string().trim().email('A valid email is required'),
+  identifier: z.string().trim().min(3).max(254).optional(),
+  studentPhone: z.string().trim().min(8).max(20).optional(),
+}).refine((data) => data.identifier || data.studentPhone, {
+  message: 'Phone or email is required',
+  path: ['identifier'],
 });
 
 export const verifyOtpSchema = z.object({
-  studentPhone: z.string().trim().min(8),
-  otp: z.string().trim().length(6, 'OTP must be 6 digits'),
+  identifier: z.string().trim().min(3).max(254).optional(),
+  studentPhone: z.string().trim().min(8).max(20).optional(),
+  otp: z.string().trim().regex(/^\d{6}$/, 'OTP must be 6 digits'),
+}).refine((data) => data.identifier || data.studentPhone, {
+  message: 'Phone or email is required',
+  path: ['identifier'],
 });
 
 export const resetPasswordSchema = z.object({
-  studentPhone: z.string().trim().min(8),
-  resetToken: z.string().trim().min(1),
-  newPassword: z.string().min(6, 'New password must be at least 6 characters'),
+  identifier: z.string().trim().min(3).max(254).optional(),
+  studentPhone: z.string().trim().min(8).max(20).optional(),
+  resetToken: z.string().trim().length(64, 'Invalid reset token'),
+  newPassword: z.string().min(8, 'New password must be at least 8 characters'),
+}).refine((data) => data.identifier || data.studentPhone, {
+  message: 'Phone or email is required',
+  path: ['identifier'],
 });
 
 export const requestOtpSchema = z.object({
   phone: z.string().trim().min(8, 'Phone number is required'),
+});
+
+// Placeholder (WhatsApp) OTP schema. NOTE: the corresponding routes in
+// whatsapp.routes.ts are DISABLED until a real SMS/WhatsApp provider is wired.
+// If those routes are re-enabled, `code` must be a 6-digit string and the
+// verify handler must validate it against a server-side stored OTP (it currently
+// accepts ANY 4-digit code — that backdoor must not ship).
+export const placeholderOtpVerifySchema = z.object({
+  phone: z.string().trim().min(8, 'Phone number is required'),
+  code: z.string().trim().length(6, 'OTP must be 6 digits'),
 });

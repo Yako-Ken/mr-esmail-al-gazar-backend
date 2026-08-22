@@ -435,22 +435,30 @@ export const getLessonById = async (id: string, authUser?: AuthUser) => {
     throw new NotFoundError('Lesson not found');
   }
 
+  if (!authUser) throw new ForbiddenError('Authentication is required');
+
   let userTracking = null;
-  if (authUser && authUser.role === 'STUDENT') {
+  if (authUser.role === 'STUDENT') {
     userTracking = await prisma.tracking.findUnique({
       where: { studentId_lessonId: { studentId: authUser.id, lessonId: id } },
     });
 
-    if (lesson.courseId) {
-      const enrollment = await prisma.courseEnrollment.findUnique({
-        where: { studentId_courseId: { studentId: authUser.id, courseId: lesson.courseId } },
-      });
-      if (!enrollment || enrollment.status !== 'APPROVED') {
-        throw new ForbiddenError('You do not have access to this lesson');
-      }
-    } else {
+    if (!lesson.courseId) {
       throw new ForbiddenError('Lessons without a valid course access are locked');
     }
+    const enrollment = await prisma.courseEnrollment.findUnique({
+      where: { studentId_courseId: { studentId: authUser.id, courseId: lesson.courseId } },
+    });
+    if (!enrollment || enrollment.status !== 'APPROVED') {
+      throw new ForbiddenError('You do not have access to this lesson');
+    }
+  } else if (authUser.role === 'TEACHER' || authUser.role === 'ASSISTANT') {
+    const ownerId = authUser.role === 'TEACHER' ? authUser.id : authUser.parentTeacherId;
+    if (!ownerId || lesson.teacherId !== ownerId) {
+      throw new ForbiddenError('You can only access lessons owned by your teacher account');
+    }
+  } else if (authUser.role !== 'SUPER_ADMIN') {
+    throw new ForbiddenError('Your role cannot access lesson media');
   }
 
   return { lesson, userTracking };

@@ -5,6 +5,7 @@ import {
   fetchStudents,
   getLessons,
   getLessonById,
+  getLessonPlayback,
   createLesson,
   updateLesson,
   deleteLesson,
@@ -24,6 +25,7 @@ router.get(
 );
 router.get('/', getLessons);
 router.get('/public', getLessons);
+router.get('/:id/playback', authMiddleware, getLessonPlayback);
 router.get('/:id', authMiddleware, getLessonById);
 router.post(
   '/',

@@ -6,10 +6,12 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import cors from 'cors';
+import helmet from 'helmet';
 import authRoutes from './routes/auth.routes';
 import adminRoutes from './routes/admin.routes';
 import studentRoutes from './routes/student.routes';
 import storeRoutes from './routes/store.routes';
+import paymentRoutes from './routes/payment.routes';
 import lessonRoutes from './routes/lesson.routes';
 import uploadRoutes from './routes/upload.routes';
 import trackingRoutes from './routes/tracking.routes';
@@ -18,6 +20,9 @@ import teacherRoutes from './routes/teacher.routes';
 import attendanceRoutes from './routes/attendance.routes';
 import parentRoutes from './routes/parent.routes';
 import progressRoutes from './routes/progress.routes';
+import analyticsRoutes from './routes/analytics.routes';
+import notificationRoutes from './routes/notification.routes';
+import webRoutes from './routes/web.routes';
 import whatsappRoutes from './routes/whatsapp.routes';
 import { getSubjects } from './controllers/admin.controller';
 
@@ -26,15 +31,24 @@ const app = express();
 const NODE_ENV: string = env.NODE_ENV;
 
 // ============================================================
-// MIDDLEWARE ORDER: CORS FIRST, THEN BODY PARSERS, THEN STATIC
+// MIDDLEWARE ORDER: HELMET, CORS, BODY PARSERS, STATIC
 // ============================================================
 
+// 0. SECURITY HEADERS — crossOriginResourcePolicy "cross-origin" so the
+// mobile app and webviews can still load /uploads assets off this origin.
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  contentSecurityPolicy: false, // landing page uses inline styles/scripts
+}));
 // 1. CORS MUST BE THE VERY FIRST MIDDLEWARE
 // ALLOWED_ORIGINS is a comma-separated allowlist (e.g. "https://app.example.com,https://admin.example.com").
 // Requests with no Origin header (native mobile apps, curl, server-to-server) are always allowed.
 const allowedOrigins = env.ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean);
 if (allowedOrigins.includes('*')) {
-  logger.warn('ALLOWED_ORIGINS is set to "*" - any origin can send credentialed requests. Set explicit domains in production.');
+  if (NODE_ENV === 'production') {
+    throw new Error('ALLOWED_ORIGINS cannot contain "*" in production. Configure explicit app origins.');
+  }
+  logger.warn('ALLOWED_ORIGINS is set to "*" - allowed only for local development.');
 }
 app.use(cors({
   origin: (origin, callback) => {
@@ -99,6 +113,7 @@ app.use('/api/parents', parentRoutes);
 
 app.use('/api/student', studentRoutes);
 app.use('/api/store', storeRoutes);
+app.use('/api/store', paymentRoutes);
 app.use('/api/lessons', lessonRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/lessons/upload', uploadRoutes);
@@ -107,6 +122,14 @@ app.use('/api/courses', courseRoutes);
 app.use('/api/teachers', teacherRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/progress', progressRoutes);
+app.use('/api/analytics', analyticsRoutes);
+app.use('/api/notifications', notificationRoutes);
+
+// Static public files (privacy policy, terms, landing page assets)
+app.use('/public', express.static(path.join(process.cwd(), 'public')));
+
+// Web routes: landing, privacy, terms — must be before /api catch-all
+app.use('/', webRoutes);
 
 // Quiz routes (for pending essays)
 app.use('/api/quiz', trackingRoutes);

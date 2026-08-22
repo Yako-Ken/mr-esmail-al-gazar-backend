@@ -3,6 +3,8 @@ import { AuthUser } from '../middlewares/auth.middleware';
 import { handleControllerError } from '../middlewares/errorHandler';
 import { getBaseUrl, toAbsoluteUploadUrl } from '../utils/urls';
 import * as lessonService from '../services/lesson.service';
+import { env } from '../utils/env';
+import { isAllowedBunnyUrl, signBunnyCdnUrl } from '../utils/bunnyToken';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/lessons/mark-attendance
@@ -13,11 +15,12 @@ export const markAttendance: RequestHandler = async (req, res): Promise<void> =>
     const authUser = (req as Request & { user?: AuthUser }).user;
     const studentId = authUser?.id;
 
-    if (!studentId) {
-      res.status(401).json({ error: 'Unauthorized' });
+    if (!studentId || authUser?.role !== 'STUDENT') {
+      res.status(403).json({ error: 'Students only' });
       return;
     }
 
+    await lessonService.getLessonById(lessonId, authUser);
     const tracking = await lessonService.markAttendance(studentId, lessonId);
     res.json(tracking);
   } catch (error) {
@@ -34,11 +37,12 @@ export const submitQuiz: RequestHandler = async (req, res): Promise<void> => {
     const authUser = (req as Request & { user?: AuthUser }).user;
     const studentId = authUser?.id;
 
-    if (!studentId) {
-      res.status(401).json({ error: 'Unauthorized' });
+    if (!studentId || authUser?.role !== 'STUDENT') {
+      res.status(403).json({ error: 'Students only' });
       return;
     }
 
+    await lessonService.getLessonById(lessonId, authUser);
     const result = await lessonService.submitQuiz(studentId, lessonId, answers);
 
     if (result.status === 'alreadySubmitted') {
@@ -103,13 +107,8 @@ export const getLessons: RequestHandler = async (req, res): Promise<void> => {
       grade: lesson.grade,
       teacherId: lesson.teacherId,
       courseId: lesson.courseId,
-      videoUrl: toAbsoluteUploadUrl(baseUrl, lesson.videoUrl),
-      bunnyVideoId: lesson.bunnyVideoId,
-      videoLibraryId: lesson.videoLibraryId,
+      hasVideo: Boolean(lesson.videoUrl || lesson.bunnyVideoId),
       thumbnailUrl: toAbsoluteUploadUrl(baseUrl, lesson.thumbnailUrl),
-      pdfUrl: toAbsoluteUploadUrl(baseUrl, lesson.pdfUrl),
-      homeworkText: lesson.homeworkText,
-      homeworkPdfUrl: toAbsoluteUploadUrl(baseUrl, lesson.homeworkPdfUrl),
       hasQuiz: lesson.quizzes.length > 0,
       createdAt: lesson.createdAt,
     }));
@@ -196,9 +195,7 @@ export const getLessonById: RequestHandler = async (req, res): Promise<void> => 
       grade: lesson.grade,
       teacherId: lesson.teacherId,
       courseId: lesson.courseId,
-      videoUrl: toAbsoluteUploadUrl(baseUrl, lesson.videoUrl),
-      bunnyVideoId: lesson.bunnyVideoId,
-      videoLibraryId: lesson.videoLibraryId,
+      hasVideo: Boolean(lesson.videoUrl || lesson.bunnyVideoId),
       thumbnailUrl: toAbsoluteUploadUrl(baseUrl, lesson.thumbnailUrl),
       pdfUrl: toAbsoluteUploadUrl(baseUrl, lesson.pdfUrl),
       homeworkText: lesson.homeworkText,
@@ -212,5 +209,93 @@ export const getLessonById: RequestHandler = async (req, res): Promise<void> => 
     });
   } catch (error) {
     handleControllerError('getLessonById', error, res);
+  }
+};
+
+// GET /api/lessons/:id/playback — returns media only after authorization.
+// Permanent Bunny URLs are never included in lesson/list payloads.
+export const getLessonPlayback: RequestHandler = async (req, res): Promise<void> => {
+  try {
+    const authUser = (req as Request & { user?: AuthUser }).user;
+    const { lesson } = await lessonService.getLessonById(req.params.id, authUser);
+
+    if (lesson.bunnyVideoId) {
+      const streamCdn = env.BUNNY_STREAM_CDN_URL?.replace(/\/$/, '');
+      if (!streamCdn) {
+        res.status(503).json({
+          error: 'Bunny Stream playback is not configured',
+          code: 'STREAM_PLAYBACK_NOT_CONFIGURED',
+        });
+        return;
+      }
+      const rawStreamUrl = `${streamCdn}/${lesson.bunnyVideoId}/playlist.m3u8`;
+      if (!env.BUNNY_STREAM_TOKEN_KEY) {
+        if (env.NODE_ENV === 'production') {
+          res.status(503).json({
+            error: 'Protected Bunny Stream playback is not configured',
+            code: 'STREAM_TOKEN_NOT_CONFIGURED',
+          });
+          return;
+        }
+        res.json({ url: rawStreamUrl, expiresAt: null, protected: false, format: 'hls' });
+        return;
+      }
+      const signedStream = signBunnyCdnUrl(
+        rawStreamUrl,
+        env.BUNNY_STREAM_TOKEN_KEY,
+        7200,
+      );
+      res.json({
+        url: signedStream.url,
+        expiresAt: signedStream.expiresAt,
+        protected: true,
+        format: 'hls',
+      });
+      return;
+    }
+
+    if (!lesson.videoUrl) {
+      res.status(404).json({ error: 'Lesson video is not available' });
+      return;
+    }
+
+    const rawUrl = toAbsoluteUploadUrl(getBaseUrl(req), lesson.videoUrl);
+    if (!rawUrl) {
+      res.status(404).json({ error: 'Lesson video is not available' });
+      return;
+    }
+
+    res.setHeader('Cache-Control', 'private, no-store, max-age=0');
+    if (env.BUNNY_CDN_URL && isAllowedBunnyUrl(rawUrl, env.BUNNY_CDN_URL)) {
+      if (!env.BUNNY_CDN_TOKEN_KEY) {
+        if (env.NODE_ENV === 'production') {
+          res.status(503).json({
+            error: 'Protected playback is not configured',
+            code: 'PLAYBACK_NOT_CONFIGURED',
+          });
+          return;
+        }
+        res.json({ url: rawUrl, expiresAt: null, protected: false });
+        return;
+      }
+
+      // Two hours permits normal seeking/range requests while keeping the URL temporary.
+      const signed = signBunnyCdnUrl(rawUrl, env.BUNNY_CDN_TOKEN_KEY, 7200);
+      res.json({ url: signed.url, expiresAt: signed.expiresAt, protected: true });
+      return;
+    }
+
+    if (env.NODE_ENV === 'production') {
+      res.status(503).json({
+        error: 'Production lessons must use the configured protected Bunny CDN',
+        code: 'UNPROTECTED_MEDIA_URL',
+      });
+      return;
+    }
+
+    // Local uploads are allowed only for development/test demos.
+    res.json({ url: rawUrl, expiresAt: null, protected: false });
+  } catch (error) {
+    handleControllerError('getLessonPlayback', error, res);
   }
 };

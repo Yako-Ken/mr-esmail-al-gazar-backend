@@ -5,7 +5,10 @@ import { submitQuiz } from '../controllers/lesson.controller';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { logger } from '../utils/logger';
+import * as lessonService from '../services/lesson.service';
+import { handleControllerError } from '../middlewares/errorHandler';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -18,19 +21,26 @@ const homeworkStorage = multer.diskStorage({
     cb(null, dir);
   },
   filename: (req, file, cb) => {
-    const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-    const ext = path.extname(file.originalname) || '.bin';
+    const unique = crypto.randomBytes(16).toString('hex');
+    const ext = path.extname(file.originalname).toLowerCase();
     cb(null, `hw-${unique}${ext}`);
   },
 });
 
 const homeworkUpload = multer({
   storage: homeworkStorage,
-  limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB max
+  limits: { fileSize: 15 * 1024 * 1024, files: 5 },
   fileFilter: (_req, file, cb) => {
-    const allowed = ['.pdf', '.jpg', '.jpeg', '.png', '.webp'];
     const ext = path.extname(file.originalname).toLowerCase();
-    if (allowed.includes(ext)) {
+    const allowedMimeByExtension: Record<string, string[]> = {
+      '.pdf': ['application/pdf'],
+      '.jpg': ['image/jpeg'],
+      '.jpeg': ['image/jpeg'],
+      '.png': ['image/png'],
+      '.webp': ['image/webp'],
+    };
+    const allowedMimeTypes = allowedMimeByExtension[ext];
+    if (allowedMimeTypes?.includes(file.mimetype)) {
       cb(null, true);
     } else {
       cb(new Error('Only PDF and image files are allowed'));
@@ -55,25 +65,17 @@ const getPendingEssays: RequestHandler = async (req, res): Promise<void> => {
     const courseId = req.query.courseId as string;
     const quizId = req.query.quizId as string;
 
-    if (!quizId) {
-      res.status(400).json({ error: 'quizId is required' });
+    if (!quizId || !courseId) {
+      res.status(400).json({ error: 'courseId and quizId are required' });
       return;
     }
 
-    // Verify course ownership
-    if (courseId) {
-      const course = await prisma.course.findFirst({
-        where: { id: courseId, teacherId: ownerId },
-      });
-      if (!course) {
-        res.status(403).json({ error: 'Course not found or forbidden' });
-        return;
-      }
-    }
-
-    // Find the Quiz using quizId (Quiz UUID)
-    const quiz = await prisma.quiz.findUnique({
-      where: { id: quizId },
+    // Bind quiz, lesson, course and teacher in one ownership check to prevent IDOR.
+    const quiz = await prisma.quiz.findFirst({
+      where: {
+        id: quizId,
+        lesson: { courseId, teacherId: ownerId },
+      },
     });
 
     if (!quiz) {
@@ -102,7 +104,7 @@ const getPendingEssays: RequestHandler = async (req, res): Promise<void> => {
         essayAnswer: q.essayAnswer || q.modelAnswer || q.answer || q.correctAnswer || '',
         points: q.points || q.mark || q.score || q.maxPoints || 10,
       }));
-      logger.info('Parsed essay questions:', JSON.stringify(essayQuestions));
+      logger.debug('Parsed essay question metadata', { count: essayQuestions.length });
     } catch (e) {
       logger.error('Failed to parse quiz questions:', e);
     }
@@ -281,15 +283,8 @@ export const submitHomework: RequestHandler = async (req, res): Promise<void> =>
       return;
     }
 
-    // Verify the lesson exists
-    const lesson = await prisma.lesson.findUnique({ where: { id: lessonId } });
-    if (!lesson) {
-      for (const f of files) {
-        if (f.path && fs.existsSync(f.path)) fs.unlinkSync(f.path);
-      }
-      res.status(404).json({ error: 'Lesson not found' });
-      return;
-    }
+    // Prevent homework submission to a lesson outside the student's approved courses.
+    await lessonService.getLessonById(lessonId, authUser);
 
     // Relative URLs served as /uploads/homeworks/<filename> separated by comma
     const hwFileUrl = files.map(f => `uploads/homeworks/${f.filename}`).join(',');
@@ -329,8 +324,11 @@ export const submitHomework: RequestHandler = async (req, res): Promise<void> =>
       fileUrl: `${baseUrl}/${hwFileUrl}`,
     });
   } catch (error) {
-    logger.error('submitHomework error:', error);
-    res.status(500).json({ error: 'Failed to submit homework' });
+    const files = (req as any).files as Express.Multer.File[] | undefined;
+    for (const file of files ?? []) {
+      if (file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+    }
+    handleControllerError('submitHomework', error, res);
   }
 };
 
@@ -340,8 +338,8 @@ export const markAttendance: RequestHandler = async (req, res): Promise<void> =>
     const authUser = (req as Request & { user?: AuthUser }).user;
     const studentId = authUser?.id;
 
-    if (!studentId) {
-      res.status(401).json({ error: 'Unauthorized' });
+    if (!studentId || authUser?.role !== 'STUDENT') {
+      res.status(403).json({ error: 'Students only' });
       return;
     }
 
@@ -350,14 +348,7 @@ export const markAttendance: RequestHandler = async (req, res): Promise<void> =>
       return;
     }
 
-    const lesson = await prisma.lesson.findUnique({
-      where: { id: lessonId },
-    });
-
-    if (!lesson) {
-      res.status(404).json({ error: 'Lesson not found' });
-      return;
-    }
+    await lessonService.getLessonById(lessonId, authUser);
 
     const tracking = await prisma.tracking.upsert({
       where: {
@@ -381,8 +372,7 @@ export const markAttendance: RequestHandler = async (req, res): Promise<void> =>
       tracking,
     });
   } catch (error) {
-    logger.error('Mark attendance error:', error);
-    res.status(500).json({ error: 'Failed to mark attendance' });
+    handleControllerError('markLessonProgress', error, res);
   }
 };
 
@@ -396,20 +386,9 @@ export const getLessonWithQuiz: RequestHandler = async (req, res): Promise<void>
       return;
     }
 
-    const lesson = await prisma.lesson.findUnique({
-      where: { id: lessonId },
-      include: {
-        teacher: {
-          select: { id: true, name: true, phone: true },
-        },
-        quizzes: true, // 'questions' is a plain String field on Quiz, always included
-      },
-    });
-
-    if (!lesson) {
-      res.status(404).json({ error: 'Lesson not found' });
-      return;
-    }
+    // Reuse the canonical lesson authorization check to prevent IDOR access
+    // to paid media, homework, and quiz questions.
+    const { lesson } = await lessonService.getLessonById(lessonId, authUser);
 
     const tracking = await prisma.tracking.findUnique({
       where: {
@@ -459,7 +438,7 @@ export const getLessonWithQuiz: RequestHandler = async (req, res): Promise<void>
       lesson: {
         id:           lesson.id,
         title:        lesson.title,
-        videoUrl:     lesson.videoUrl,
+        hasVideo:     Boolean(lesson.videoUrl || lesson.bunnyVideoId),
         thumbnailUrl: lesson.thumbnailUrl,
       },
       courseId:      lesson.courseId,
@@ -474,8 +453,7 @@ export const getLessonWithQuiz: RequestHandler = async (req, res): Promise<void>
       tracking: tracking || null,
     });
   } catch (error) {
-    logger.error('Get lesson error:', error);
-    res.status(500).json({ error: 'Failed to fetch lesson' });
+    handleControllerError('getLessonWithQuiz', error, res);
   }
 };
 
@@ -514,6 +492,20 @@ const gradeEssay: RequestHandler = async (req, res): Promise<void> => {
 
     const { trackingId } = req.params;
     const { score, feedback, gradedQuestionId } = req.body;
+    const parsedScore = Number(score);
+    if (!Number.isInteger(parsedScore) || parsedScore < 0 || parsedScore > 1000) {
+      res.status(400).json({ error: 'score must be an integer between 0 and 1000' });
+      return;
+    }
+    if (feedback != null && (typeof feedback !== 'string' || feedback.length > 2000)) {
+      res.status(400).json({ error: 'feedback must not exceed 2000 characters' });
+      return;
+    }
+    if (gradedQuestionId != null &&
+        (typeof gradedQuestionId !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(gradedQuestionId))) {
+      res.status(400).json({ error: 'Invalid question identifier' });
+      return;
+    }
 
     const ownerId = authUser.role === 'ASSISTANT' && (authUser as any).parentTeacherId
       ? (authUser as any).parentTeacherId
@@ -535,8 +527,7 @@ const gradeEssay: RequestHandler = async (req, res): Promise<void> => {
       catch (e) { answersData = {}; }
     }
 
-    const rawScore  = (score !== undefined && score !== null) ? parseInt(String(score), 10) : 0;
-    const safeScore = isNaN(rawScore) ? 0 : rawScore;
+    const safeScore = parsedScore;
 
     // Find the essay entry to grade:
     // If gradedQuestionId supplied (e.g. "essay_1"), target only that key.
@@ -546,6 +537,10 @@ const gradeEssay: RequestHandler = async (req, res): Promise<void> => {
     const keysToGrade  = gradedQuestionId
       ? allDataKeys.filter(k => k === gradedQuestionId || answersData[k]?.questionId === gradedQuestionId)
       : essayKeys;
+    if (keysToGrade.length === 0) {
+      res.status(400).json({ error: 'No matching essay answer found' });
+      return;
+    }
 
     // Stamp ALL score variants so every Flutter fallback path resolves
     keysToGrade.forEach((key) => {

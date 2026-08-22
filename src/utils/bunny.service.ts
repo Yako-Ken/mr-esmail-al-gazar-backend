@@ -10,8 +10,12 @@ const REGION = process.env.BUNNY_STORAGE_REGION || 'de';
 const STREAM_API_KEY = process.env.BUNNY_STREAM_API_KEY;
 const STREAM_LIBRARY_ID = process.env.BUNNY_STREAM_LIBRARY_ID;
 
-// API Host based on region (Frankfurt/DE uses storage.bunnycdn.com)
-const BASE_STORAGE_URL = `https://storage.bunnycdn.com/${STORAGE_ZONE_NAME}`;
+// API host depends on the Storage Zone region. Frankfurt/DE uses the
+// unprefixed host; other regions use e.g. ny.storage.bunnycdn.com.
+const STORAGE_HOST = !REGION || REGION === 'de'
+  ? 'storage.bunnycdn.com'
+  : `${REGION}.storage.bunnycdn.com`;
+const BASE_STORAGE_URL = `https://${STORAGE_HOST}/${STORAGE_ZONE_NAME}`;
 const BASE_STREAM_URL = `https://video.bunnycdn.com/library/${STREAM_LIBRARY_ID}`;
 
 export class BunnyService {
@@ -53,8 +57,8 @@ export class BunnyService {
    */
   static async uploadFile(buffer: Buffer, remotePath: string): Promise<string> {
     try {
-      if (!STORAGE_ZONE_NAME || !ACCESS_KEY) {
-        throw new Error('Bunny.net credentials are not configured in environment variables.');
+      if (!STORAGE_ZONE_NAME || !ACCESS_KEY || !CDN_URL) {
+        throw new Error('Bunny.net Storage Zone, access key, and CDN URL must be configured.');
       }
 
       const url = `${BASE_STORAGE_URL}/${remotePath}`;

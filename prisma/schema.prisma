@@ -17,9 +17,10 @@ model User {
   status      String   @default("pending")
   isApproved  Boolean  @default(false)
   isVerified  Boolean  @default(false)
+  sessionVersion Int   @default(0) // Increment to revoke every previously issued JWT
   permissions String   @default("[]")
   subjectId   String?
-  parentPhone String?   // For STUDENTs: stores parent's phone for auto-linking
+  parentPhone String?   // Unverified contact hint only; never grants parent access
   deviceId    String?   // For device-limit enforcement (max 2 accounts per device)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -38,6 +39,8 @@ model User {
   courseEnrollments CourseEnrollment[]    @relation("StudentCourseEnrollments")
   attendanceRecords AttendanceRecord[]    @relation("AttendanceStudent")
   lessonProgresses  LessonProgress[]      @relation("StudentProgress")
+  notifications    Notification[]
+  pushTokens       PushToken[]
 }
 
 model StudentParentRelation {
@@ -50,6 +53,23 @@ model StudentParentRelation {
   @@unique([studentId, parentId])
 }
 
+model ParentLinkRequest {
+  id           String    @id @default(uuid())
+  studentId    String
+  studentPhone String
+  codeHash     String
+  status       String    @default("PENDING")
+  attempts     Int       @default(0)
+  parentId     String?
+  expiresAt    DateTime
+  consumedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([studentId, status, createdAt])
+  @@index([studentPhone, status])
+}
+
 model Course {
   id           String   @id @default(uuid())
   teacherId    String
@@ -58,13 +78,19 @@ model Course {
   description  String?
   subject      String?
   grade       String?
-  price        Float    @default(0)
+  price        Float    @default(0) // Legacy display field; migrate callers to priceMinor
+  priceMinor   Int      @default(0)
+  currency     String   @default("EGP")
   thumbnailUrl String?
+  isPublished  Boolean  @default(false)
+  publishedAt  DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   lessons      Lesson[]                @relation("CourseLessons")
   courseEnrollments CourseEnrollment[] @relation("StudentCourseEnrollments")
   lessonProgresses  LessonProgress[]   @relation("CourseProgress")
+
+  @@index([isPublished, createdAt])
 }
 
 model CourseEnrollment {
@@ -143,6 +169,18 @@ model AttendanceSession {
   records   AttendanceRecord[]
 }
 
+model AttendanceQrUse {
+  id        String   @id @default(uuid())
+  jti       String   @unique
+  studentId String
+  sessionId String
+  expiresAt DateTime
+  usedAt    DateTime @default(now())
+
+  @@index([expiresAt])
+  @@index([studentId, sessionId])
+}
+
 model AttendanceRecord {
   id        String            @id @default(uuid())
   sessionId String
@@ -171,12 +209,130 @@ model LessonProgress {
 }
 
 model PasswordResetOTP {
-  id           String   @id @default(uuid())
+  id           String    @id @default(uuid())
   studentPhone String
-  otp          String
-  resetToken   String?  @unique // Used to verify the actual reset request
+  otp          String    // HMAC digest; plaintext OTP is never persisted
+  resetToken   String?   @unique // SHA-256 digest; plaintext token is never persisted
+  attempts     Int       @default(0)
+  consumedAt   DateTime?
   expiresAt    DateTime
-  createdAt    DateTime @default(now())
+  createdAt    DateTime  @default(now())
 
   @@index([studentPhone])
+}
+
+// Analytics event tracking (self-hosted, GDPR-safe)
+model PaymentOrder {
+  id                  String   @id @default(uuid())
+  studentId           String
+  courseId            String
+  amountMinor         Int
+  currency            String   @default("EGP")
+  provider            String
+  status              String   @default("PENDING")
+  idempotencyKey      String   @unique
+  providerOrderId     String?  @unique
+  providerIntentionId String?  @unique
+  checkoutUrl         String?
+  failureReason       String?
+  paidAt              DateTime?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([studentId, createdAt])
+  @@index([courseId, status])
+}
+
+model PaymentAttempt {
+  id                String   @id @default(uuid())
+  paymentOrderId    String
+  providerAttemptId String?  @unique
+  status            String   @default("CREATED")
+  responseCode      String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([paymentOrderId, createdAt])
+}
+
+model PaymentEvent {
+  id                 String   @id @default(uuid())
+  externalEventId    String   @unique
+  paymentOrderId     String?
+  eventType           String
+  payload             String
+  processingStatus    String   @default("RECEIVED")
+  createdAt           DateTime @default(now())
+  processedAt         DateTime?
+
+  @@index([paymentOrderId, createdAt])
+}
+
+model CourseEntitlement {
+  id            String    @id @default(uuid())
+  studentId     String
+  courseId      String
+  sourceOrderId String?
+  status        String    @default("ACTIVE")
+  grantedAt     DateTime  @default(now())
+  revokedAt     DateTime?
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([studentId, courseId])
+  @@index([sourceOrderId])
+}
+
+model Refund {
+  id                 String   @id @default(uuid())
+  paymentOrderId     String
+  providerRefundId   String?  @unique
+  amountMinor        Int
+  currency           String   @default("EGP")
+  status             String   @default("REQUESTED")
+  reason             String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([paymentOrderId, createdAt])
+}
+
+model AnalyticsEvent {
+  id        String   @id @default(uuid())
+  eventType String
+  userId    String?
+  metadata  String? // JSON string
+  timestamp DateTime @default(now())
+
+  @@index([eventType, timestamp])
+  @@index([userId, timestamp])
+}
+
+// Persistent notifications store
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String   // 'lesson_new' | 'payment_approved' | 'grade_posted' | 'announcement'
+  title     String
+  body      String
+  data      String?  // JSON payload (e.g. {courseId, lessonId}) for deep link navigation
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt, isRead])
+}
+
+// Store each user's Firebase/Expo push token
+model PushToken {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  platform  String   // 'android' | 'ios'
+  active    Boolean  @default(true)
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@index([userId, active])
+  @@unique([userId, token])
 }

@@ -1,4 +1,10 @@
-import { loginSchema, registerSchema, verifyOtpSchema, changePasswordSchema } from './auth.schema';
+import {
+  loginSchema,
+  registerSchema,
+  verifyOtpSchema,
+  changePasswordSchema,
+  forgotPasswordRequestSchema,
+} from './auth.schema';
 
 describe('loginSchema', () => {
   it('accepts a login with identifier + password', () => {
@@ -27,6 +33,7 @@ describe('registerSchema', () => {
     const result = registerSchema.safeParse({
       name: 'Ahmed',
       phone: '01012345678',
+      email: 'ahmed@example.com',
       password: 'password123',
       role: 'STUDENT',
     });
@@ -34,21 +41,50 @@ describe('registerSchema', () => {
   });
 
   it('rejects a name shorter than 2 characters', () => {
-    expect(registerSchema.safeParse({ name: 'A', phone: '01012345678', password: 'password123' }).success).toBe(false);
+    expect(registerSchema.safeParse({ name: 'A', phone: '01012345678', email: 'a@example.com', password: 'password123' }).success).toBe(false);
   });
 
   it('rejects a password shorter than 6 characters', () => {
-    expect(registerSchema.safeParse({ name: 'Ahmed', phone: '01012345678', password: '123' }).success).toBe(false);
+    expect(registerSchema.safeParse({ name: 'Ahmed', phone: '01012345678', email: 'ahmed@example.com', password: '123' }).success).toBe(false);
   });
 
-  it('rejects an invalid role', () => {
-    const result = registerSchema.safeParse({
+  it.each(['TEACHER', 'ADMIN', 'ASSISTANT', 'SUPER_ADMIN', 'SUPERHERO'])(
+    'rejects internal role %s on public registration',
+    (role) => {
+      const result = registerSchema.safeParse({
+        name: 'Ahmed',
+        phone: '01012345678',
+        email: 'ahmed@example.com',
+        password: 'password123',
+        role,
+      });
+      expect(result.success).toBe(false);
+    },
+  );
+
+  it('defaults a public registration to STUDENT', () => {
+    const result = registerSchema.parse({
       name: 'Ahmed',
       phone: '01012345678',
+      email: 'ahmed@example.com',
       password: 'password123',
-      role: 'SUPERHERO',
     });
-    expect(result.success).toBe(false);
+    expect(result.role).toBe('STUDENT');
+  });
+});
+
+describe('forgotPasswordRequestSchema', () => {
+  it('accepts one identifier and strips caller-supplied recovery contacts', () => {
+    const result = forgotPasswordRequestSchema.parse({
+      identifier: '01012345678',
+      parentPhone: '01099999999',
+      email: 'attacker@example.com',
+    });
+    expect(result).toEqual({ identifier: '01012345678' });
+  });
+
+  it('keeps studentPhone as a temporary compatibility alias', () => {
+    expect(forgotPasswordRequestSchema.safeParse({ studentPhone: '01012345678' }).success).toBe(true);
   });
 });
 

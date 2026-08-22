@@ -20,8 +20,46 @@ describe('app', () => {
     expect(res.body.error).toBe('Invalid request body');
   });
 
+  it.each(['TEACHER', 'ADMIN', 'ASSISTANT', 'SUPER_ADMIN'])(
+    'rejects public registration for internal role %s before touching the database',
+    async (role) => {
+      const res = await request(app).post('/api/auth/register').send({
+        name: 'Internal Role Attempt',
+        phone: '01012345678',
+        email: 'internal@example.com',
+        password: 'password123',
+        role,
+      });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('Invalid request body');
+    },
+  );
+
   it('rejects an unauthenticated request to a protected route with 401', async () => {
     const res = await request(app).get('/api/courses');
     expect(res.status).toBe(401);
+  });
+
+  it('never exposes permanent media URLs from the public lesson catalog', async () => {
+    const res = await request(app).get('/api/lessons/public');
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body)).toBe(true);
+    for (const lesson of res.body) {
+      expect(lesson).not.toHaveProperty('videoUrl');
+      expect(lesson).not.toHaveProperty('bunnyVideoId');
+      expect(lesson).not.toHaveProperty('pdfUrl');
+    }
+  });
+
+  it('requires authentication for lesson playback URLs', async () => {
+    const res = await request(app).get('/api/lessons/unknown/playback');
+    expect(res.status).toBe(401);
+  });
+
+  it('serves an informational payment return without activating anything', async () => {
+    const res = await request(app).get('/payment/return?orderId=demo-order');
+    expect(res.status).toBe(200);
+    expect(res.headers['cache-control']).toContain('no-store');
+    expect(res.text).toContain('جارٍ تأكيد الدفع');
   });
 });

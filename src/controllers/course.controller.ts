@@ -28,6 +28,8 @@ export const getTeacherCourses: RequestHandler = async (req, res): Promise<void>
         subject: c.subject,
         thumbnailUrl: toAbsoluteUploadUrl(baseUrl, c.thumbnailUrl),
         lessonCount: c._count.lessons,
+        isPublished: c.isPublished,
+        publishedAt: c.publishedAt,
         createdAt: c.createdAt,
       }))
     );
@@ -58,6 +60,7 @@ export const getAllCourses: RequestHandler = async (req, res): Promise<void> => 
         thumbnailUrl: toAbsoluteUploadUrl(baseUrl, c.thumbnailUrl),
         teacherName: c.teacher.name,
         lessonCount: c._count.lessons,
+        isPublished: c.isPublished,
         createdAt: c.createdAt,
       }))
     );
@@ -93,6 +96,9 @@ export const createCourse: RequestHandler = async (req, res): Promise<void> => {
         id: course.id,
         title: course.title,
         price: course.price,
+        priceMinor: course.priceMinor,
+        currency: course.currency,
+        isPublished: course.isPublished,
         thumbnailUrl: thumbnailRelativePath ? `${baseUrl}/uploads/${thumbnailRelativePath}` : null,
         createdAt: course.createdAt,
       },
@@ -118,41 +124,17 @@ export const getCourseById: RequestHandler = async (req, res): Promise<void> => 
       description: (course as any).description ?? null,
       subject: (course as any).subject ?? null,
       thumbnailUrl: toAbsoluteUploadUrl(baseUrl, course.thumbnailUrl),
+      isPublished: course.isPublished,
+      publishedAt: course.publishedAt,
       teacher: course.teacher,
-      lessons: course.lessons.map((l) => {
-        const firstQuiz = l.quizzes && l.quizzes.length > 0 ? l.quizzes[0] : null;
-
-        let parsedQuizData: any = null;
-        if (firstQuiz?.questions != null) {
-          try {
-            parsedQuizData = JSON.parse(firstQuiz.questions);
-          } catch (e) {
-            // Malformed quiz JSON shouldn't take down the whole course response
-          }
-        }
-
-        return {
-          id: l.id,
-          title: l.title,
-          thumbnailUrl: toAbsoluteUploadUrl(baseUrl, l.thumbnailUrl),
-          videoUrl: l.videoUrl ? toAbsoluteUploadUrl(baseUrl, l.videoUrl) : null,
-          createdAt: l.createdAt,
-          homeworkPdfUrl: l.homeworkPdfUrl,
-          homeworkText: l.homeworkText,
-          hasQuiz: firstQuiz !== null,
-          quizId: firstQuiz?.id ?? null,
-          quiz: firstQuiz ? {
-            id: firstQuiz.id,
-            title: parsedQuizData != null ? (parsedQuizData['title'] || 'Untitled Quiz') : 'Untitled Quiz',
-            questions: parsedQuizData != null && parsedQuizData['questions'] != null
-                ? parsedQuizData['questions']
-                : [],
-            timeLimitMinutes: parsedQuizData != null && parsedQuizData['timeLimit'] != null
-                ? parsedQuizData['timeLimit']
-                : 30,
-          } : null,
-        };
-      }),
+      lessons: course.lessons.map((lesson) => ({
+        id: lesson.id,
+        title: lesson.title,
+        thumbnailUrl: toAbsoluteUploadUrl(baseUrl, lesson.thumbnailUrl),
+        createdAt: lesson.createdAt,
+        hasVideo: Boolean(lesson.videoUrl || lesson.bunnyVideoId),
+        hasQuiz: lesson.quizzes.length > 0,
+      })),
     });
   } catch (error) {
     handleControllerError('getCourseById', error, res);

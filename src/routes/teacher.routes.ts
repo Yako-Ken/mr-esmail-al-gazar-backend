@@ -2,7 +2,7 @@ import { Router, Request, Response, RequestHandler } from 'express';
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { authMiddleware, AuthUser } from '../middlewares/auth.middleware';
-import { getTeacherEnrollments, updateEnrollmentStatus, getPendingPayments, approvePayment, rejectPayment, getPaymentHistory, enrollStudentByTeacher } from '../controllers/enrollment.controller';
+import { getTeacherEnrollments, updateEnrollmentStatus, enrollStudentByTeacher } from '../controllers/enrollment.controller';
 import { getTeacherStudents, removeStudentEnrollment, getTeacherCoursesForGrading, getCourseAssignments, getCourseQuizzes, getAssignmentSubmissions, updateSubmissionStatus } from '../controllers/student.controller';
 import { logger } from '../utils/logger';
 
@@ -86,14 +86,14 @@ export const getTeacherStats: RequestHandler = async (req, res): Promise<void> =
 
     const courses = await prisma.course.findMany({
       where: { teacherId: ownerId },
-      select: { id: true },
+      select: { id: true, subject: true, grade: true },
     });
 
     const courseIds = courses.map(c => c.id);
 
     const courseEnrollments = await prisma.courseEnrollment.findMany({
-      where: { courseId: { in: courseIds } },
-      select: { studentId: true },
+      where: { courseId: { in: courseIds }, status: 'APPROVED' },
+      select: { studentId: true, courseId: true },
     });
 
     const uniqueStudentIds = new Set<string>();
@@ -104,16 +104,31 @@ export const getTeacherStats: RequestHandler = async (req, res): Promise<void> =
       include: { trackings: true },
     });
 
-    const uniqueLessonStudents = new Set<string>();
-    lessons.forEach(l => l.trackings.forEach(t => uniqueLessonStudents.add(t.studentId)));
-
-    const totalPresent = lessons.reduce((sum, l) => sum + l.trackings.filter(t => t.isPresent).length, 0);
-    const totalExpected = lessons.length > 0 && uniqueLessonStudents.size > 0 
-      ? lessons.length * uniqueLessonStudents.size 
+    const sessions = await prisma.attendanceSession.findMany({
+      where: { ownerId },
+      include: { records: { select: { studentId: true } } },
+    });
+    const courseById = new Map(courses.map(course => [course.id, course]));
+    let totalExpected = 0;
+    let totalPresent = 0;
+    for (const session of sessions) {
+      const eligible = new Set(
+        courseEnrollments
+          .filter(enrollment => {
+            const course = courseById.get(enrollment.courseId);
+            return course?.subject === session.subject && course?.grade === session.grade;
+          })
+          .map(enrollment => enrollment.studentId),
+      );
+      totalExpected += eligible.size;
+      totalPresent += session.records.filter(record => eligible.has(record.studentId)).length;
+    }
+    const attendancePercent = totalExpected > 0
+      ? Math.round((totalPresent / totalExpected) * 100)
       : 0;
-    const attendancePercent = totalExpected > 0 ? Math.round((totalPresent / totalExpected) * 100) : 0;
 
-    const trackingsWithScore = lessons.flatMap(l => l.trackings).filter(t => t.quizScore !== null && t.quizScore > 0);
+    const allTrackings = lessons.flatMap(l => l.trackings);
+    const trackingsWithScore = allTrackings.filter(t => t.quizScore !== null && t.quizScore > 0);
     const avgScore = trackingsWithScore.length > 0 
       ? Math.round(trackingsWithScore.reduce((sum, t) => sum + (t.quizScore || 0), 0) / trackingsWithScore.length)
       : 0;
@@ -125,20 +140,68 @@ export const getTeacherStats: RequestHandler = async (req, res): Promise<void> =
     res.json({
       attendancePercent,
       avgScore,
-      homeworkCompletion: trackingsWithScore.length,
-      totalStudents: uniqueLessonStudents.size,
-      totalLessons: courses.length,
+      homeworkCompletion: allTrackings.filter(t => t.hwStatus !== 'NOT_SUBMITTED').length,
+      totalStudents: uniqueStudentIds.size,
+      totalLessons: lessons.length,
       approvedEnrollments,
     });
     logger.info('Teacher Stats:', {
-      totalStudents: uniqueLessonStudents.size,
-      totalLessons: courses.length,
+      totalStudents: uniqueStudentIds.size,
+      totalLessons: lessons.length,
       approvedEnrollments,
       ownerId,
     });
   } catch (error) {
     logger.error('Get teacher stats error:', error);
     res.status(500).json({ error: 'Failed to fetch stats' });
+  }
+};
+
+export const getTeacherSalesSummary: RequestHandler = async (req, res): Promise<void> => {
+  try {
+    const authUser = (req as Request & { user?: AuthUser }).user;
+    if (!authUser || !['TEACHER', 'ASSISTANT'].includes(authUser.role)) {
+      res.status(403).json({ error: 'Teachers only' });
+      return;
+    }
+    const ownerId = authUser.role === 'ASSISTANT' && authUser.parentTeacherId
+      ? authUser.parentTeacherId
+      : authUser.id;
+    const courses = await prisma.course.findMany({
+      where: { teacherId: ownerId },
+      select: { id: true, title: true },
+    });
+    const titleById = new Map(courses.map(course => [course.id, course.title]));
+    const orders = await prisma.paymentOrder.findMany({
+      where: { courseId: { in: courses.map(course => course.id) } },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+    const sum = (statuses: string[]) => orders
+      .filter(order => statuses.includes(order.status))
+      .reduce((total, order) => total + order.amountMinor, 0);
+
+    res.json({
+      currency: 'EGP',
+      summary: {
+        grossPaidMinor: sum(['PAID']),
+        pendingMinor: sum(['CREATING', 'PENDING']),
+        refundedMinor: sum(['REFUNDED', 'PARTIALLY_REFUNDED']),
+      },
+      orders: orders.map(order => ({
+        id: order.id,
+        courseId: order.courseId,
+        courseTitle: titleById.get(order.courseId) ?? 'Course',
+        amountMinor: order.amountMinor,
+        currency: order.currency,
+        status: order.status,
+        createdAt: order.createdAt,
+      })),
+      disclaimer: 'Gross sales only. Platform fees, taxes, refunds and teacher settlement are not calculated here.',
+    });
+  } catch (error) {
+    logger.error('getTeacherSalesSummary error:', error);
+    res.status(500).json({ error: 'Could not load sales summary.' });
   }
 };
 
@@ -290,11 +353,24 @@ router.delete('/assistants/:id', authMiddleware, deleteAssistant);
 router.get('/enrollments', authMiddleware, getTeacherEnrollments);
 router.put('/enrollments/:id', authMiddleware, updateEnrollmentStatus);
 
-// Payment approvals
-router.get('/payments/pending', authMiddleware, getPendingPayments);
-router.get('/payments/history', authMiddleware, getPaymentHistory);
-router.post('/payments/:id/approve', authMiddleware, approvePayment);
-router.post('/payments/:id/reject', authMiddleware, rejectPayment);
+// Webhook-driven sales. Manual receipt approval endpoints are intentionally removed.
+router.get('/payments/summary', authMiddleware, getTeacherSalesSummary);
+router.all('/payments/pending', authMiddleware, (_req, res) => res.status(410).json({
+  error: 'Manual payment approvals are no longer supported.',
+  code: 'MANUAL_PAYMENTS_REMOVED',
+}));
+router.all('/payments/history', authMiddleware, (_req, res) => res.status(410).json({
+  error: 'Use /payments/summary for webhook-driven sales.',
+  code: 'MANUAL_PAYMENTS_REMOVED',
+}));
+router.all('/payments/:id/approve', authMiddleware, (_req, res) => res.status(410).json({
+  error: 'Payment state is controlled by verified provider webhooks.',
+  code: 'MANUAL_PAYMENTS_REMOVED',
+}));
+router.all('/payments/:id/reject', authMiddleware, (_req, res) => res.status(410).json({
+  error: 'Payment state is controlled by verified provider webhooks.',
+  code: 'MANUAL_PAYMENTS_REMOVED',
+}));
 
 // Student management
 router.get('/students', authMiddleware, getTeacherStudents);

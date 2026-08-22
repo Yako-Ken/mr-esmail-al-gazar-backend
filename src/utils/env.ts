@@ -16,12 +16,23 @@ const envSchema = z.object({
   BUNNY_STORAGE_ZONE_NAME: z.string().optional(),
   BUNNY_STORAGE_ACCESS_KEY: z.string().optional(),
   BUNNY_CDN_URL: z.string().optional(),
+  BUNNY_CDN_TOKEN_KEY: z.string().optional(),
   BUNNY_STORAGE_REGION: z.string().optional(),
   BUNNY_STREAM_API_KEY: z.string().optional(),
   BUNNY_STREAM_LIBRARY_ID: z.string().optional(),
+  BUNNY_STREAM_CDN_URL: z.union([z.string().url(), z.literal('')]).optional(),
+  BUNNY_STREAM_TOKEN_KEY: z.string().optional(),
+  PAYMOB_SECRET_KEY: z.string().optional(),
+  PAYMOB_PUBLIC_KEY: z.string().optional(),
+  PAYMOB_HMAC_SECRET: z.string().optional(),
+  PAYMOB_INTEGRATION_ID: z.string().optional(),
+  PAYMOB_API_BASE_URL: z.string().url().default('https://accept.paymob.com'),
   PRODUCTION_URL: z.string().optional(),
   SUPER_ADMIN_PHONE: z.string().optional(),
   SUPER_ADMIN_PASSWORD_HASH: z.string().optional(),
+
+  // Feature flags
+  WHATSAPP_OTP_ENABLED: z.enum(['true', 'false']).optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);

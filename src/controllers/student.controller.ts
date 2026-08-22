@@ -47,11 +47,8 @@ export const getRecentLessons: RequestHandler = async (req, res): Promise<void> 
       grade: lesson.grade,
       teacherId: lesson.teacherId,
       courseId: lesson.courseId,
-      videoUrl: toAbsoluteUploadUrl(baseUrl, lesson.videoUrl),
+      hasVideo: Boolean(lesson.videoUrl),
       thumbnailUrl: toAbsoluteUploadUrl(baseUrl, lesson.thumbnailUrl),
-      pdfUrl: toAbsoluteUploadUrl(baseUrl, lesson.pdfUrl),
-      homeworkText: lesson.homeworkText,
-      homeworkPdfUrl: toAbsoluteUploadUrl(baseUrl, lesson.homeworkPdfUrl),
       hasQuiz: false, // We can populate this if we query it, but for recent lessons UI it's rarely used
       createdAt: lesson.createdAt,
       teacher: lesson.teacher,

@@ -16,13 +16,9 @@ RUN npm install
 # Copy the rest of the application code
 COPY . .
 
-# إعداد رابط قاعدة البيانات عشان يبني الجداول جواها
-ENV DATABASE_URL="file:./prisma/dev.db"
-
-# توليد كود العميل وبناء الجداول في قاعدة البيانات
+# Generate the Prisma client only. Database migrations and seeding must happen
+# against the runtime database, never against a disposable image-layer SQLite DB.
 RUN npx prisma generate
-RUN npx prisma db push
-RUN npx prisma db seed
 
 # Build the TypeScript project
 RUN npm run build
@@ -41,18 +37,28 @@ COPY package*.json ./
 # Install only production dependencies
 RUN npm install --omit=dev
 
-# Copy built files from the builder stage
+# Copy built files and migration/schema metadata from the builder stage.
 COPY --from=builder /app/dist ./dist
-# السطر ده هينسخ فولدر prisma بالكامل بما فيه ملف الداتابيز اللي اتكريت (dev.db)
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 
-# Set environment variables
+# ⚠️ DO NOT set ENV DATABASE_URL here!
+# The container MUST receive its database connection string at runtime from
+# the platform (Railway variables / docker -e / docker-compose environment).
+# Hard-coding a file-based URL here makes the container look for ./prisma/dev.db
+# inside the image — wiping it on every redeploy.
+#
+# The server is expected to see something like:
+#   railway.app   : postgresql://postgres:<pwd>@postgres.railway.internal:5432/postgres
+#   local docker  : postgresql://postgres:postgres@host.docker.internal:5432/edutech
+#
+# If you intentionally want SQLite for on-prem use, do:
+#   docker run -e DATABASE_URL="file:/data/edutech.db" -v edutech-data:/data ...
+#
+# ENV NODE_ENV=production is fine; PORT is also safe to leave to the platform.
 ENV NODE_ENV=production
-ENV PORT=5000
-ENV DATABASE_URL="file:./prisma/dev.db"
 
-# Expose the port
+# Expose the port (documentation only; Railway injects $PORT)
 EXPOSE 5000
 
 # Start the application using npm start to trigger schema sync

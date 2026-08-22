@@ -99,11 +99,17 @@ export const authMiddleware: RequestHandler = async (
         status: true,
         isApproved: true,
         parentTeacherId: true,
+        sessionVersion: true,
       },
     });
 
     if (!user) {
       res.status(401).json({ error: 'User no longer exists' });
+      return;
+    }
+
+    if (!Number.isInteger(decoded.sv) || decoded.sv !== user.sessionVersion) {
+      res.status(401).json({ error: 'Session has been revoked. Please login again.' });
       return;
     }
 
@@ -175,10 +181,11 @@ export const optionalAuthMiddleware: RequestHandler = async (
         status: true,
         isApproved: true,
         parentTeacherId: true,
+        sessionVersion: true,
       },
     });
 
-    if (user && user.isApproved) {
+    if (user && user.isApproved && Number.isInteger(decoded.sv) && decoded.sv === user.sessionVersion) {
       req.user = {
         id: user.id,
         phone: user.phone,

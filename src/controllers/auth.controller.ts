@@ -4,16 +4,16 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import nodemailer from 'nodemailer';
 import crypto from 'crypto';
-import { getIO } from '../socket';
 import { logger } from '../utils/logger';
 import { env } from '../utils/env';
+import { generateOtp, hashOtp, hashResetToken, secureDigestEqual } from '../utils/otp';
 
 const prisma = new PrismaClient();
 
 export const login = async (req: Request, res: Response): Promise<void> => {
   try {
-    logger.info('📥 LOGIN REQUEST RECEIVED');
-    logger.info('   Body:', JSON.stringify(req.body));
+    // Never log request bodies or account identifiers on authentication paths.
+    logger.info('Login attempt received');
 
     const identifier = req.body.identifier || req.body.phone || req.body.email;
     const password = req.body.password;
@@ -26,8 +26,6 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     // Explicitly treat the identifier as a string
     const searchIdentifier = String(identifier);
 
-    logger.info('🔍 Looking for user with identifier:', searchIdentifier);
-
     // MongoDB Mongoose uses $or, but Prisma uses OR
     const user = await prisma.user.findFirst({
       where: {
@@ -39,28 +37,26 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     });
 
     if (!user) {
-      logger.info('❌ User not found for identifier:', searchIdentifier);
+      logger.warn('Login rejected: invalid credentials');
       res.status(401).json({ error: 'Invalid credentials' });
       return;
     }
 
-    logger.info('✅ User found:', user.name);
-
     const isPasswordValid = await bcrypt.compare(password, user.password);
 
     if (!isPasswordValid) {
-      logger.info('❌ Invalid password for user:', searchIdentifier);
+      logger.warn('Login rejected: invalid credentials');
       res.status(401).json({ error: 'Invalid credentials' });
       return;
     }
 
     const token = jwt.sign(
-      { id: user.id, phone: user.phone, role: user.role },
+      { id: user.id, phone: user.phone, role: user.role, sv: user.sessionVersion },
       env.JWT_SECRET,
       { expiresIn: '7d' }
     );
 
-    logger.info('✅ Login successful for user:', searchIdentifier);
+    logger.info('Login successful', { userId: user.id, role: user.role });
 
     res.json({
       token,
@@ -86,14 +82,21 @@ export const login = async (req: Request, res: Response): Promise<void> => {
 
 export const register = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { name, phone, password, role, parentPhone, deviceId } = req.body;
+    const { name, phone, email, password, role = 'STUDENT', parentPhone, deviceId } = req.body;
+
+    // Defense in depth: schema validation already restricts these values, but
+    // the controller must remain safe if it is ever called from another route.
+    if (role !== 'STUDENT' && role !== 'PARENT') {
+      res.status(403).json({ error: 'Public registration is limited to students and parents.' });
+      return;
+    }
 
     const sanitizedPhone = phone?.toString().trim();
     const sanitizedParentPhone = parentPhone?.toString().trim();
     const sanitizedDeviceId = deviceId?.toString().trim() || null;
 
-    if (!name || !sanitizedPhone || !password) {
-      res.status(400).json({ error: 'Name, phone and password are required' });
+    if (!name || !sanitizedPhone || !email || !password) {
+      res.status(400).json({ error: 'Name, phone, email and password are required' });
       return;
     }
 
@@ -125,37 +128,22 @@ export const register = async (req: Request, res: Response): Promise<void> => {
       data: {
         name,
         phone: sanitizedPhone,
+        email,
         password: hashedPassword,
-        role: role || 'STUDENT',
-        isApproved: role === 'TEACHER' ? false : true,
-        status: role === 'TEACHER' ? 'pending' : 'approved',
+        role,
+        isApproved: true,
+        status: 'approved',
         parentPhone: role === 'STUDENT' && sanitizedParentPhone ? sanitizedParentPhone : null,
         deviceId: sanitizedDeviceId,
       },
     });
 
-    if (user.role === 'TEACHER') {
-      const io = getIO();
-      if (io) {
-        io.to('admins').emit('new_teacher_pending', {
-          teacherId: user.id,
-          name: user.name,
-          phone: user.phone,
-          status: user.status,
-          message: 'A new teacher has registered and is awaiting approval.'
-        });
-      }
-    }
+    // A parent's phone matching a student's contact hint never grants access.
+    // A verified StudentParentRelation must be created by the linking flow.
 
-    // ── Auto-link: when a PARENT registers, find students whose stored
-    // parentPhone matches this parent's phone and create the relation.
-    if (user.role === 'PARENT') {
-      logger.info(`✅ PARENT registered: ${user.phone} — children will be linked via /api/parents/my-children`);
-    }
-
-    // Issue JWT immediately so the client is authenticated without a separate login
+    // Issue JWT immediately so the client is authenticated without a separate login.
     const token = jwt.sign(
-      { id: user.id, phone: user.phone, role: user.role },
+      { id: user.id, phone: user.phone, role: user.role, sv: user.sessionVersion },
       env.JWT_SECRET,
       { expiresIn: '7d' }
     );
@@ -187,15 +175,12 @@ export const editProfile = async (req: Request, res: Response): Promise<void> =>
       return;
     }
 
-    const { name, phone, password, vodafoneCashNumber, instapayHandle } = req.body;
+    const { name, phone, vodafoneCashNumber, instapayHandle } = req.body;
 
     const updateData: any = {};
 
     if (name) updateData.name = name;
     if (phone) updateData.phone = phone;
-    if (password) {
-      updateData.password = await bcrypt.hash(password, 10);
-    }
     if (vodafoneCashNumber !== undefined) updateData.vodafoneCashNumber = vodafoneCashNumber;
     if (instapayHandle !== undefined) updateData.instapayHandle = instapayHandle;
 
@@ -304,13 +289,16 @@ export const changePassword = async (req: Request, res: Response): Promise<void>
       return;
     }
 
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    const hashedPassword = await bcrypt.hash(newPassword, 12);
     await prisma.user.update({
       where: { id: authUser.id },
-      data: { password: hashedPassword },
+      data: {
+        password: hashedPassword,
+        sessionVersion: { increment: 1 },
+      },
     });
 
-    res.json({ message: 'Password changed successfully' });
+    res.json({ message: 'Password changed successfully. Please sign in again on every device.' });
   } catch (error) {
     logger.error('changePassword error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -328,113 +316,105 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+const genericResetRequestResponse = {
+  message: 'If the account exists and has a verified email, a code will be sent shortly.',
+};
+
+const findAccountByIdentifier = (identifier: string) => prisma.user.findFirst({
+  where: { OR: [{ phone: identifier }, { email: identifier }] },
+});
+
 export const requestForgotPasswordOTP = async (req: Request, res: Response): Promise<void> => {
+  const identifier = String(req.body.identifier || req.body.studentPhone || '').trim();
+
   try {
-    const { studentPhone, parentPhone, email } = req.body;
+    const account = await findAccountByIdentifier(identifier);
 
-    if (!studentPhone || !parentPhone || !email) {
-      res.status(400).json({ error: 'All fields are required' });
+    // Always return the same response to prevent account enumeration.
+    if (!account?.email || !env.EMAIL_USER || !env.EMAIL_PASS) {
+      logger.warn('Password reset request could not be delivered', {
+        accountFound: Boolean(account),
+        hasVerifiedEmail: Boolean(account?.email),
+        emailProviderConfigured: Boolean(env.EMAIL_USER && env.EMAIL_PASS),
+      });
+      res.status(202).json(genericResetRequestResponse);
       return;
     }
 
-    // Validate student and parent phone match
-    const student = await prisma.user.findFirst({
-      where: {
-        phone: studentPhone,
-        parentPhone: parentPhone,
-        role: 'STUDENT',
-      },
-    });
+    const otp = generateOtp();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-    if (!student) {
-      res.status(404).json({ error: 'Student with this phone and parent phone not found' });
-      return;
-    }
-
-    // Generate 6-digit OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiration = new Date();
-    expiration.setMinutes(expiration.getMinutes() + 15);
-
-    // Save or update OTP in DB
-    await prisma.passwordResetOTP.deleteMany({ where: { studentPhone } });
+    await prisma.passwordResetOTP.deleteMany({ where: { studentPhone: account.phone } });
     await prisma.passwordResetOTP.create({
       data: {
-        studentPhone,
-        otp,
-        expiresAt: expiration,
+        studentPhone: account.phone,
+        otp: hashOtp(account.id, otp, env.JWT_SECRET),
+        expiresAt,
       },
     });
 
-    // Send email
-    const mailOptions = {
-      from: `"تطبيق مستر إسماعيل الجزار" <${process.env.EMAIL_USER}>`,
-      to: email,
-      subject: 'كود التحقق - تطبيق مستر إسماعيل الجزار 🔒',
+    await transporter.sendMail({
+      from: `"منصة مستر إسماعيل الجزار" <${env.EMAIL_USER}>`,
+      to: account.email,
+      subject: 'كود استعادة كلمة المرور',
       html: `
-        <div dir="rtl" style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7f6; padding: 40px; text-align: center; color: #333;">
-          <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 15px; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.05); border: 1px solid #e0e0e0;">
-            <div style="background-color: #0D0F18; padding: 30px; color: #ffffff;">
-              <img src="https://i.ibb.co/chQn8ztr/logo-page-0001.jpg" alt="Logo" style="width: 150px; margin-bottom: 15px; border-radius: 10px;">
-              <p style="margin: 0; opacity: 0.8; font-size: 18px;">منصة مستر إسماعيل الجزار التعليمية</p>
-            </div>
-            <div style="padding: 40px;">
-              <h2 style="color: #0D0F18; margin-top: 0; font-weight: 700;">طلب استعادة كلمة السر</h2>
-              <p style="font-size: 16px; line-height: 1.6; margin-bottom: 30px;">
-                مرحباً بك، لقد طلبت كود التحقق لتغيير كلمة السر الخاصة بك في <strong>تطبيق مستر إسماعيل الجزار</strong>. يرجى استخدام الكود التالي لإتمام العملية:
-              </p>
-              <div style="background-color: #f9f9f9; border: 2px dashed #0D0F18; border-radius: 12px; padding: 25px; margin-bottom: 30px;">
-                <span style="font-family: 'Courier New', Courier, monospace; font-size: 42px; font-weight: 900; letter-spacing: 10px; color: #0D0F18;">${otp}</span>
-              </div>
-              <p style="font-size: 14px; background-color: #fff9e6; border-right: 4px solid #ffcc00; padding: 15px; border-radius: 4px; display: inline-block; text-align: right; width: 100%; box-sizing: border-box;">
-                <strong>⚠️ ملاحظة هامة:</strong> هذا الكود صالح لمدة <strong>15 دقيقة</strong> فقط. إذا لم تكن أنت من طلب هذا الكود، يرجى تجاهل هذا البريد.
-              </p>
-            </div>
-            <div style="background-color: #fafafa; padding: 20px; border-top: 1px solid #eeeeee; font-size: 12px; color: #999;">
-              © ${new Date().getFullYear()} تطبيق مستر إسماعيل الجزار - جميع الحقوق محفوظة
-            </div>
+        <div dir="rtl" style="font-family:Arial,sans-serif;background:#f2ede7;padding:32px;color:#11100f">
+          <div style="max-width:560px;margin:auto;background:#fff;padding:32px;border:1px solid #d6cabe">
+            <h2>استعادة كلمة المرور</h2>
+            <p>استخدم الكود التالي خلال 10 دقائق. لا تشاركه مع أي شخص.</p>
+            <p style="font:700 36px monospace;letter-spacing:8px">${otp}</p>
+            <p>إذا لم تطلب تغيير كلمة المرور، تجاهل الرسالة.</p>
           </div>
-        </div>
-      `,
-    };
+        </div>`,
+    });
 
-    await transporter.sendMail(mailOptions);
-
-    res.json({ message: 'OTP sent to your email' });
+    res.status(202).json(genericResetRequestResponse);
   } catch (error) {
-    logger.error('requestForgotPasswordOTP error:', error);
-    res.status(500).json({ error: 'Failed to send OTP' });
+    // Keep the public response generic while preserving an actionable server log.
+    logger.error('Password reset delivery failed:', error);
+    res.status(202).json(genericResetRequestResponse);
   }
 };
 
 export const verifyForgotPasswordOTP = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { studentPhone, otp } = req.body;
+    const identifier = String(req.body.identifier || req.body.studentPhone || '').trim();
+    const account = await findAccountByIdentifier(identifier);
+    const genericError = { error: 'Invalid or expired verification code' };
 
-    if (!studentPhone || !otp) {
-      res.status(400).json({ error: 'Phone and OTP are required' });
+    if (!account) {
+      res.status(400).json(genericError);
       return;
     }
 
     const record = await prisma.passwordResetOTP.findFirst({
-      where: {
-        studentPhone,
-        otp,
-        expiresAt: { gt: new Date() },
-      },
+      where: { studentPhone: account.phone, consumedAt: null },
+      orderBy: { createdAt: 'desc' },
     });
 
-    if (!record) {
-      res.status(400).json({ error: 'Invalid or expired OTP' });
+    if (!record || record.expiresAt <= new Date() || record.attempts >= 5) {
+      res.status(400).json(genericError);
       return;
     }
 
-    // Generate a secure reset token
-    const resetToken = crypto.randomBytes(32).toString('hex');
+    const actualDigest = hashOtp(account.id, String(req.body.otp), env.JWT_SECRET);
+    if (!secureDigestEqual(actualDigest, record.otp)) {
+      await prisma.passwordResetOTP.update({
+        where: { id: record.id },
+        data: { attempts: { increment: 1 } },
+      });
+      res.status(400).json(genericError);
+      return;
+    }
 
+    const resetToken = crypto.randomBytes(32).toString('hex');
     await prisma.passwordResetOTP.update({
       where: { id: record.id },
-      data: { resetToken },
+      data: {
+        resetToken: hashResetToken(resetToken),
+        // Invalidate the short OTP immediately; only the long reset token remains usable.
+        otp: hashOtp(account.id, crypto.randomBytes(16).toString('hex'), env.JWT_SECRET),
+      },
     });
 
     res.json({ message: 'OTP verified', resetToken });
@@ -446,35 +426,33 @@ export const verifyForgotPasswordOTP = async (req: Request, res: Response): Prom
 
 export const resetPassword = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { studentPhone, resetToken, newPassword } = req.body;
-
-    if (!studentPhone || !resetToken || !newPassword) {
-      res.status(400).json({ error: 'All fields are required' });
-      return;
-    }
-
+    const identifier = String(req.body.identifier || req.body.studentPhone || '').trim();
+    const account = await findAccountByIdentifier(identifier);
+    const tokenDigest = hashResetToken(String(req.body.resetToken));
     const record = await prisma.passwordResetOTP.findUnique({
-      where: { resetToken },
+      where: { resetToken: tokenDigest },
     });
 
-    if (!record || record.studentPhone !== studentPhone || record.expiresAt < new Date()) {
-      res.status(400).json({ error: 'Invalid or expired reset token' });
+    if (!account || !record || record.studentPhone !== account.phone ||
+        record.consumedAt !== null || record.expiresAt <= new Date()) {
+      res.status(400).json({ error: 'Invalid or expired reset request' });
       return;
     }
 
-    // Hash new password
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    const hashedPassword = await bcrypt.hash(String(req.body.newPassword), 12);
 
-    // Update user password
-    await prisma.user.update({
-      where: { phone: studentPhone },
-      data: { password: hashedPassword },
-    });
+    await prisma.$transaction([
+      prisma.user.update({
+        where: { id: account.id },
+        data: {
+          password: hashedPassword,
+          sessionVersion: { increment: 1 },
+        },
+      }),
+      prisma.passwordResetOTP.deleteMany({ where: { studentPhone: account.phone } }),
+    ]);
 
-    // Delete the OTP record
-    await prisma.passwordResetOTP.delete({ where: { id: record.id } });
-
-    res.json({ message: 'Password reset successful' });
+    res.json({ message: 'Password reset successful. Please sign in again on every device.' });
   } catch (error) {
     logger.error('resetPassword error:', error);
     res.status(500).json({ error: 'Failed to reset password' });

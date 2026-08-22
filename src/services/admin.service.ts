@@ -145,7 +145,7 @@ export const login = async (phone: string, password: string) => {
   logger.info('✅ User approved, generating JWT...');
 
   const token = jwt.sign(
-    { id: user.id, phone: user.phone, role: user.role },
+    { id: user.id, phone: user.phone, role: user.role, sv: user.sessionVersion },
     JWT_SECRET,
     { expiresIn: '7d' }
   );

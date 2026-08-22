@@ -1,177 +1,66 @@
-import { Router } from 'express';
+import { Router, RequestHandler } from 'express';
 import { logger } from '../utils/logger';
-import { env } from '../utils/env';
 import { otpRateLimit } from '../middlewares/rateLimit.middleware';
-import { validateBody } from '../middlewares/validate.middleware';
-import { requestOtpSchema } from '../schemas/auth.schema';
 
 const router = Router();
 
-// POST /api/auth/student/request-otp
-// Dummy endpoint - returns success without actually sending SMS
-router.post('/student/request-otp', otpRateLimit, validateBody(requestOtpSchema), async (req, res) => {
-  try {
-    const { phone } = req.body;
+// =============================================================================
+// WhatsApp/SMS parent-verification — PLACEHOLDER, disabled by default.
+//
+// SECURITY HISTORY (do not re-enable without reading this):
+//   These routes previously returned success for ANY 4-digit code
+//   (`if (code.length === 4 && /^\d+$/.test(code))`), which is an auth-bypass
+//   backdoor. Shipping that to production means anyone can register a student
+//   account against any phone number with no verification at all.
+//
+//   The routes are now hard-gated behind the WHATSAPP_OTP_ENABLED env flag.
+//   Until a real SMS/WhatsApp provider (Twilio Verify, Vodafone Egypt, etc.)
+//   is integrated — meaning a code is generated server-side, sent to the
+//   device, stored, rate-limited, and validated — keep this flag unset.
+//
+// A regression test lives in src/routes/whatsapp.routes.test.ts and fails CI
+// if any of these endpoints ever returns 200 again while the flag is off.
+// =============================================================================
 
-    if (!phone) {
-      return res.status(400).json({
-        success: false,
-        error: 'Phone number is required',
-      });
-    }
+const isEnabled = (): boolean => process.env.WHATSAPP_OTP_ENABLED === 'true';
 
-    // TODO: Implement Telegram SMS integration
-    // For now, just return success so Flutter app doesn't break
-    logger.info(`📱 OTP request for ${phone} (Telegram integration pending)`);
+const featureDisabled: RequestHandler = (_req, res): void => {
+  res.status(501).json({
+    success: false,
+    error: 'WhatsApp verification is not available yet.',
+    code: 'FEATURE_DISABLED',
+  });
+};
 
-    return res.status(200).json({
-      success: true,
-      message: 'تم إرسال الكود بنجاح',
-    });
-  } catch (error: any) {
-    logger.error('❌ Error sending OTP:', error);
-    return res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to send OTP',
-    });
+const otpHandler: RequestHandler = (req, res, next): void => {
+  if (!isEnabled()) {
+    // Log once per attempt so abuse of the disabled feature is visible in logs
+    logger.warn(`⚠️ Disabled WhatsApp OTP endpoint hit: ${req.method} ${req.path}`);
+    featureDisabled(req, res, next);
+    return;
   }
-});
+  // When a real provider is wired, replace the routes below with the actual
+  // request/verify handlers and remove the featureDisabled gates.
+  next();
+};
 
-// POST /api/auth/student/verify-otp
-// Dummy verification - accepts any 4-digit code
-router.post('/student/verify-otp', otpRateLimit, async (req, res) => {
-  try {
-    const { phone, code } = req.body;
-
-    if (!phone || !code) {
-      return res.status(400).json({
-        success: false,
-        error: 'Phone and code are required',
-      });
-    }
-
-    // TODO: Implement proper OTP verification from database
-    // For now, accept any 4-digit code
-    logger.info(`🔐 Verifying OTP ${code} for ${phone}`);
-
-    if (code.length === 4 && /^\d+$/.test(code)) {
-      return res.status(200).json({
-        success: true,
-        message: 'تم التأكد من الكود',
-      });
-    } else {
-      return res.status(400).json({
-        success: false,
-        error: 'كود غير صحيح',
-      });
-    }
-  } catch (error: any) {
-    logger.error('❌ Error verifying OTP:', error);
-    return res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to verify OTP',
-    });
-  }
-});
-
-// POST /api/auth/parent/request-otp
-router.post('/parent/request-otp', otpRateLimit, validateBody(requestOtpSchema), async (req, res) => {
-  try {
-    const { phone } = req.body;
-
-    if (!phone) {
-      return res.status(400).json({
-        success: false,
-        error: 'Phone number is required',
-      });
-    }
-
-    // TODO: Implement Telegram SMS integration
-    logger.info(`📱 Parent OTP request for ${phone} (Telegram integration pending)`);
-
-    return res.status(200).json({
-      success: true,
-      message: 'تم إرسال الكود بنجاح',
-    });
-  } catch (error: any) {
-    logger.error('❌ Error sending OTP:', error);
-    return res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to send OTP',
-    });
-  }
-});
-
-// POST /api/auth/parent/verify-otp
-router.post('/parent/verify-otp', otpRateLimit, async (req, res) => {
-  try {
-    const { phone, code } = req.body;
-
-    if (!phone || !code) {
-      return res.status(400).json({
-        success: false,
-        error: 'Phone and code are required',
-      });
-    }
-
-    logger.info(`🔐 Verifying parent OTP ${code} for ${phone}`);
-
-    if (code.length === 4 && /^\d+$/.test(code)) {
-      return res.status(200).json({
-        success: true,
-        message: 'تم التأكد من الكود',
-      });
-    } else {
-      return res.status(400).json({
-        success: false,
-        error: 'كود غير صحيح',
-      });
-    }
-  } catch (error: any) {
-    logger.error('❌ Error verifying OTP:', error);
-    return res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to verify OTP',
-    });
-  }
-});
+router.post('/student/request-otp', otpRateLimit, otpHandler, featureDisabled);
+router.post('/student/verify-otp', otpRateLimit, otpHandler, featureDisabled);
+router.post('/parent/request-otp', otpRateLimit, otpHandler, featureDisabled);
+router.post('/parent/verify-otp', otpRateLimit, otpHandler, featureDisabled);
 
 // GET /api/auth/student/parent-verification-status
-router.get('/student/parent-verification-status', async (req, res) => {
-  try {
-    const authHeader = req.headers.authorization;
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({
-        verified: false,
-        error: 'No token provided',
-      });
-    }
-
-    const token = authHeader.split(' ')[1];
-    const jwt = require('jsonwebtoken');
-
-    try {
-      jwt.verify(token, env.JWT_SECRET);
-    } catch (e) {
-      return res.status(401).json({
-        verified: false,
-        error: 'Invalid token',
-      });
-    }
-
-    // TODO: Check database for actual parent verification status
+// Previously returned a blanket `{ verified: true }` — also a backdoor.
+router.get('/student/parent-verification-status', (req, res) => {
+  if (!isEnabled()) {
     return res.status(200).json({
-      verified: true,
-      message: 'Parent verified',
-    });
-  } catch (error: any) {
-    logger.error('❌ Error checking parent verification:', error);
-    return res.status(500).json({
       verified: false,
-      error: error.message || 'Failed to check verification',
+      pending: true,
+      message: 'Phone verification provider is not configured.',
     });
   }
+  // Real implementation: look up the parent's verification status in the DB.
+  return res.status(200).json({ verified: false, pending: true });
 });
 
 export default router;
