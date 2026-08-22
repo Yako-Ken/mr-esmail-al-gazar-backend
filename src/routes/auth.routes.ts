@@ -16,7 +16,11 @@ import {
   revokeSession,
 } from '../controllers/session.controller';
 import { authMiddleware } from '../middlewares/auth.middleware';
-import { authRateLimit, otpRateLimit } from '../middlewares/rateLimit.middleware';
+import {
+  authRateLimit,
+  otpRateLimit,
+  sensitiveActionRateLimit,
+} from '../middlewares/rateLimit.middleware';
 import { validateBody } from '../middlewares/validate.middleware';
 import {
   loginSchema,
@@ -26,6 +30,17 @@ import {
   verifyOtpSchema,
   resetPasswordSchema,
 } from '../schemas/auth.schema';
+import {
+  cancelAccountDeletionSchema,
+  exportAccountDataSchema,
+  requestAccountDeletionSchema,
+} from '../schemas/privacy.schema';
+import {
+  cancelDeletionRequest,
+  exportAccountData,
+  privacyRequestStatus,
+  requestAccountDeletion,
+} from '../controllers/privacy.controller';
 
 const router = Router();
 
@@ -36,6 +51,28 @@ router.get('/me', authMiddleware, getMe);
 router.get('/sessions', authMiddleware, listSessions);
 router.delete('/sessions/:sessionId', authMiddleware, revokeSession);
 router.post('/sessions/revoke-others', authMiddleware, revokeOtherSessions);
+router.get('/privacy/requests', authMiddleware, privacyRequestStatus);
+router.post(
+  '/privacy/export',
+  authMiddleware,
+  sensitiveActionRateLimit,
+  validateBody(exportAccountDataSchema),
+  exportAccountData,
+);
+router.post(
+  '/privacy/deletion',
+  authMiddleware,
+  sensitiveActionRateLimit,
+  validateBody(requestAccountDeletionSchema),
+  requestAccountDeletion,
+);
+router.post(
+  '/privacy/deletion/cancel',
+  authMiddleware,
+  sensitiveActionRateLimit,
+  validateBody(cancelAccountDeletionSchema),
+  cancelDeletionRequest,
+);
 router.put('/profile', authMiddleware, editProfile);
 router.patch('/profile', authMiddleware, editProfile);
 router.post('/change-password', authMiddleware, validateBody(changePasswordSchema), changePassword);

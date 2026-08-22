@@ -1,4 +1,4 @@
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 
 // Login/register: enough headroom for real typos, tight enough to blunt brute force.
 export const authRateLimit = rateLimit({
@@ -10,6 +10,15 @@ export const authRateLimit = rateLimit({
 });
 
 // OTP request/verify: OTPs are short and numeric, so this needs to be stricter than login.
+export const sensitiveActionRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  keyGenerator: (req) => `${req.user?.id ?? 'anonymous'}:${ipKeyGenerator(req.ip ?? '')}`,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many sensitive account actions. Please try again later.' },
+});
+
 export const otpRateLimit = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 5,

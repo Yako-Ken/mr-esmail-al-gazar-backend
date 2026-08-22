@@ -1,10 +1,12 @@
 import { Server as HttpServer } from 'http';
 import { Server, Socket } from 'socket.io';
 import jwt from 'jsonwebtoken';
+import { PrismaClient } from '@prisma/client';
 import { logger } from './utils/logger';
 import { env } from './utils/env';
 
 let io: Server | null = null;
+const prisma = new PrismaClient();
 
 /**
  * Extract a clean JWT from a raw string that may carry accidental
@@ -21,32 +23,59 @@ const cleanToken = (raw: unknown): string | null => {
 };
 
 export const initSocket = (server: HttpServer) => {
+  const allowedOrigins = env.ALLOWED_ORIGINS.split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
   io = new Server(server, {
     cors: {
-      origin: '*',
+      origin: allowedOrigins.includes('*') ? true : allowedOrigins,
       methods: ['GET', 'POST'],
+      credentials: true,
     },
   });
 
   // ── JWT auth middleware: identify the user BEFORE any event is handled ──
-  io.use((socket, next) => {
+  io.use(async (socket, next) => {
     const token = cleanToken(socket.handshake.auth?.token);
     if (!token) {
-      // Allow anonymous connections (they just won't receive user pushes),
-      // but log so we can spot misconfigured clients.
+      // Anonymous sockets are allowed but never join personal or role rooms.
       logger.warn(`🔌 [Socket.IO] Connection without token: ${socket.id}`);
       return next();
     }
     try {
       const decoded = jwt.verify(token, env.JWT_SECRET) as jwt.JwtPayload;
-      if (decoded.id) {
-        (socket as Socket & { userId?: string }).userId = decoded.id;
-        (socket as Socket & { userRole?: string }).userRole = decoded.role;
+      if (!decoded.id || !Number.isInteger(decoded.sv)) {
+        return next(new Error('Unauthorized socket'));
       }
+      const user = await prisma.user.findUnique({
+        where: { id: String(decoded.id) },
+        select: { id: true, role: true, status: true, sessionVersion: true },
+      });
+      if (!user || user.status === 'deleted' || user.status === 'deletion_processing' ||
+          decoded.sv !== user.sessionVersion) {
+        return next(new Error('Unauthorized socket'));
+      }
+      if (decoded.sid !== undefined) {
+        if (typeof decoded.sid !== 'string' || !decoded.sid) {
+          return next(new Error('Unauthorized socket'));
+        }
+        const session = await prisma.userSession.findFirst({
+          where: {
+            id: decoded.sid,
+            userId: user.id,
+            revokedAt: null,
+            expiresAt: { gt: new Date() },
+          },
+          select: { id: true },
+        });
+        if (!session) return next(new Error('Unauthorized socket'));
+      }
+      (socket as Socket & { userId?: string }).userId = user.id;
+      (socket as Socket & { userRole?: string }).userRole = user.role;
       next();
     } catch {
-      logger.warn(`🔌 [Socket.IO] Invalid token from ${socket.id}`);
-      next(); // still connect, but unauthenticated → no personal room
+      logger.warn(`🔌 [Socket.IO] Invalid or revoked token from ${socket.id}`);
+      next(new Error('Unauthorized socket'));
     }
   });
 
@@ -83,6 +112,10 @@ export const initSocket = (server: HttpServer) => {
   });
 
   return io;
+};
+
+export const disconnectUserSockets = (userId: string): void => {
+  io?.in(`user_${userId}`).disconnectSockets(true);
 };
 
 export const getIO = () => {

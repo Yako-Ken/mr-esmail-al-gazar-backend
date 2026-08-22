@@ -109,6 +109,11 @@ export const authMiddleware: RequestHandler = async (
       return;
     }
 
+    if (user.status === 'deleted' || user.status === 'deletion_processing') {
+      res.status(401).json({ error: 'Account is no longer active.' });
+      return;
+    }
+
     if (!Number.isInteger(decoded.sv) || decoded.sv !== user.sessionVersion) {
       res.status(401).json({ error: 'Session has been revoked. Please login again.' });
       return;
@@ -214,7 +219,9 @@ export const optionalAuthMiddleware: RequestHandler = async (
       },
     });
 
-    if (user && user.isApproved && Number.isInteger(decoded.sv) && decoded.sv === user.sessionVersion) {
+    if (user && user.isApproved && user.status !== 'deleted' &&
+        user.status !== 'deletion_processing' && Number.isInteger(decoded.sv) &&
+        decoded.sv === user.sessionVersion) {
       let sessionId: string | null = null;
       if (decoded.sid !== undefined) {
         if (typeof decoded.sid !== 'string' || !decoded.sid) {

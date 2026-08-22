@@ -51,6 +51,18 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
+    // Re-check immediately before creating the session so a due deletion job
+    // can quiesce the account while bcrypt verification is running.
+    const activeAccount = await prisma.user.findUnique({
+      where: { id: user.id },
+      select: { status: true },
+    });
+    if (!activeAccount || activeAccount.status === 'deleted' ||
+        activeAccount.status === 'deletion_processing') {
+      res.status(401).json({ error: 'Invalid credentials' });
+      return;
+    }
+
     const session = await createUserSession(prisma, req, user.id);
     const token = jwt.sign(
       {

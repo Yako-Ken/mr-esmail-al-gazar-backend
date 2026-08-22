@@ -42,6 +42,7 @@ model User {
   notifications    Notification[]
   pushTokens       PushToken[]
   sessions         UserSession[]
+  dataPrivacyRequests DataPrivacyRequest[]
 }
 
 model UserSession {
@@ -57,6 +58,27 @@ model UserSession {
   revokedAt  DateTime?
 
   @@index([userId, revokedAt, expiresAt])
+}
+
+model DataPrivacyRequest {
+  id           String    @id @default(uuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type         String
+  status       String
+  requestKey   String?   @unique
+  reason       String?
+  requestedAt  DateTime  @default(now())
+  scheduledFor DateTime?
+  completedAt  DateTime?
+  canceledAt   DateTime?
+  attempts     Int       @default(0)
+  lastError    String?
+  processingStartedAt DateTime?
+  previousUserStatus  String?
+
+  @@index([userId, type, requestedAt])
+  @@index([status, scheduledFor])
 }
 
 model StudentParentRelation {
