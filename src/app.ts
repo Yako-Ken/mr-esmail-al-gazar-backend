@@ -9,6 +9,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import authRoutes from './routes/auth.routes';
 import adminRoutes from './routes/admin.routes';
+import adminOperationsRoutes from './routes/adminOperations.routes';
 import studentRoutes from './routes/student.routes';
 import storeRoutes from './routes/store.routes';
 import paymentRoutes from './routes/payment.routes';
@@ -110,6 +111,7 @@ if (!fs.existsSync(uploadsDir)) {
 app.use('/api/auth', authRoutes);
 app.use('/api/auth', whatsappRoutes); // WhatsApp OTP routes
 app.use('/api/admin/users', adminRoutes);
+app.use('/api/admin', adminOperationsRoutes);
 
 // Subjects route (no auth required for Flutter app)
 const subjectRoutes = Router();

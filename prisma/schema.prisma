@@ -423,3 +423,19 @@ model ConsentEvent {
 
   @@index([userId, createdAt])
 }
+
+// Append-only administrative audit trail. Rows are never updated or deleted
+// by the API; actorId is a plain reference so records survive account erasure.
+model AdminAuditEvent {
+  id         String   @id @default(uuid())
+  actorId    String // acting admin user id (no FK: audit survives deletion)
+  action     String // 'refund_initiated' | ...
+  category   String // 'finance' | 'content' | 'attendance' | 'security'
+  targetType String
+  targetId   String
+  metadata   String?  // JSON string snapshot of safe details
+  createdAt  DateTime @default(now())
+
+  @@index([category, createdAt])
+  @@index([createdAt])
+}
