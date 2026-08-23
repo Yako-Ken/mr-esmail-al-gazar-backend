@@ -205,6 +205,114 @@ export const getTeacherSalesSummary: RequestHandler = async (req, res): Promise<
   }
 };
 
+// Computed earnings ledger for the settlements screen. Read-only: payouts
+// happen externally, and REQUESTED refunds are shown separately because the
+// provider has not confirmed them yet.
+export const getTeacherSettlements: RequestHandler = async (req, res): Promise<void> => {
+  try {
+    const authUser = (req as Request & { user?: AuthUser }).user;
+    if (!authUser || !['TEACHER', 'ASSISTANT'].includes(authUser.role)) {
+      res.status(403).json({ error: 'Teachers only' });
+      return;
+    }
+    const ownerId = authUser.role === 'ASSISTANT' && authUser.parentTeacherId
+      ? authUser.parentTeacherId
+      : authUser.id;
+
+    const courses = await prisma.course.findMany({
+      where: { teacherId: ownerId },
+      select: { id: true, title: true },
+    });
+    const courseIds = courses.map((course) => course.id);
+    const titleById = new Map(courses.map((course) => [course.id, course.title]));
+
+    const paidOrders = await prisma.paymentOrder.findMany({
+      where: { courseId: { in: courseIds }, status: 'PAID' },
+      orderBy: { paidAt: 'desc' },
+      select: {
+        id: true,
+        courseId: true,
+        amountMinor: true,
+        currency: true,
+        paidAt: true,
+        createdAt: true,
+      },
+    });
+
+    const orderIds = paidOrders.map((order) => order.id);
+    const refunds = orderIds.length
+      ? await prisma.refund.findMany({
+          where: { paymentOrderId: { in: orderIds } },
+          select: { paymentOrderId: true, amountMinor: true, status: true },
+        })
+      : [];
+    const refundByOrder = new Map<string, number>();
+    for (const refund of refunds) {
+      const current = refundByOrder.get(refund.paymentOrderId) ?? 0;
+      refundByOrder.set(refund.paymentOrderId, current + refund.amountMinor);
+    }
+    const confirmedRefundOrderIds = new Set(
+      refunds
+        .filter((refund) => refund.status === 'REFUNDED')
+        .map((refund) => refund.paymentOrderId),
+    );
+    const refundPendingMinor = refunds
+      .filter((refund) => refund.status === 'REQUESTED' || refund.status === 'PROCESSING')
+      .reduce((total, refund) => total + refund.amountMinor, 0);
+
+    const grossPaidMinor = paidOrders.reduce((total, order) => total + order.amountMinor, 0);
+    const refundedConfirmedMinor = paidOrders
+      .filter((order) => confirmedRefundOrderIds.has(order.id))
+      .reduce((total, order) => total + (refundByOrder.get(order.id) ?? 0), 0);
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+    const grossThisMonthMinor = paidOrders
+      .filter((order) => (order.paidAt ?? order.createdAt) >= monthStart)
+      .reduce((total, order) => total + order.amountMinor, 0);
+
+    const perCourseMap = new Map<string, { ordersCount: number; paidMinor: number; refundedMinor: number }>();
+    for (const order of paidOrders) {
+      const entry = perCourseMap.get(order.courseId) ?? { ordersCount: 0, paidMinor: 0, refundedMinor: 0 };
+      entry.ordersCount += 1;
+      entry.paidMinor += order.amountMinor;
+      if (confirmedRefundOrderIds.has(order.id)) {
+        entry.refundedMinor += refundByOrder.get(order.id) ?? 0;
+      }
+      perCourseMap.set(order.courseId, entry);
+    }
+
+    res.json({
+      currency: 'EGP',
+      summary: {
+        grossPaidMinor,
+        refundedConfirmedMinor,
+        refundPendingMinor,
+        netMinor: grossPaidMinor - refundedConfirmedMinor,
+        grossThisMonthMinor,
+      },
+      perCourse: [...perCourseMap.entries()].map(([courseId, entry]) => ({
+        courseId,
+        courseTitle: titleById.get(courseId) ?? 'Course',
+        ...entry,
+      })),
+      recentOrders: paidOrders.slice(0, 10).map((order) => ({
+        id: order.id,
+        courseTitle: titleById.get(order.courseId) ?? 'Course',
+        amountMinor: order.amountMinor,
+        currency: order.currency,
+        refundedMinor: refundByOrder.get(order.id) ?? 0,
+        paidAt: order.paidAt,
+      })),
+      disclaimer:
+        'صافي الأرباح محسوب من المدفوعات الموثقة ناقص الاستردادات المؤكدة فقط. الاستردادات قيد المراجعة تُعرض منفصلة حتى تأكيد المزود، والتحويل البنكي يتم خارج النظام.',
+    });
+  } catch (error) {
+    logger.error('getTeacherSettlements error:', error);
+    res.status(500).json({ error: 'Could not load settlements.' });
+  }
+};
+
 export const createAssistant: RequestHandler = async (req, res): Promise<void> => {
   try {
     const authUser = (req as Request & { user?: AuthUser }).user;
@@ -355,6 +463,7 @@ router.put('/enrollments/:id', authMiddleware, updateEnrollmentStatus);
 
 // Webhook-driven sales. Manual receipt approval endpoints are intentionally removed.
 router.get('/payments/summary', authMiddleware, getTeacherSalesSummary);
+router.get('/payments/settlements', authMiddleware, getTeacherSettlements);
 router.all('/payments/pending', authMiddleware, (_req, res) => res.status(410).json({
   error: 'Manual payment approvals are no longer supported.',
   code: 'MANUAL_PAYMENTS_REMOVED',
