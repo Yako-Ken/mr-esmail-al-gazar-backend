@@ -41,6 +41,17 @@ import {
   privacyRequestStatus,
   requestAccountDeletion,
 } from '../controllers/privacy.controller';
+import {
+  createSupportTicket,
+  getPreferences,
+  listConsentHistory,
+  listSupportTickets,
+  updatePreferences,
+} from '../controllers/account.controller';
+import {
+  createSupportTicketSchema,
+  updatePreferencesSchema,
+} from '../schemas/account.schema';
 
 const router = Router();
 
@@ -76,6 +87,26 @@ router.post(
 router.put('/profile', authMiddleware, editProfile);
 router.patch('/profile', authMiddleware, editProfile);
 router.post('/change-password', authMiddleware, validateBody(changePasswordSchema), changePassword);
+
+// Account preferences (consent + notification settings)
+router.get('/preferences', authMiddleware, getPreferences);
+router.put(
+  '/preferences',
+  authMiddleware,
+  validateBody(updatePreferencesSchema),
+  updatePreferences,
+);
+router.get('/consent/history', authMiddleware, listConsentHistory);
+
+// Support tickets
+router.post(
+  '/support/tickets',
+  authMiddleware,
+  authRateLimit,
+  validateBody(createSupportTicketSchema),
+  createSupportTicket,
+);
+router.get('/support/tickets', authMiddleware, listSupportTickets);
 
 // Forgot Password Flow
 router.post('/forgot-password', otpRateLimit, validateBody(forgotPasswordRequestSchema), requestForgotPasswordOTP);

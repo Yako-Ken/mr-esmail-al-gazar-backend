@@ -43,6 +43,9 @@ model User {
   pushTokens       PushToken[]
   sessions         UserSession[]
   dataPrivacyRequests DataPrivacyRequest[]
+  supportTickets   SupportTicket[]
+  preferences      UserPreference?
+  consentEvents    ConsentEvent[]
 }
 
 model UserSession {
@@ -373,4 +376,50 @@ model PushToken {
 
   @@index([userId, active])
   @@unique([userId, token])
+}
+
+// Persisted per-user support tickets (replaces the static prototype list)
+model SupportTicket {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subject   String
+  details   String
+  status    String   @default("OPEN") // OPEN | RESOLVED
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, createdAt])
+}
+
+// One persisted preferences row per user (consent + notification settings)
+model UserPreference {
+  id                     String   @id @default(uuid())
+  userId                 String   @unique
+  user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  analyticsConsent       Boolean  @default(false)
+  productMessagesConsent Boolean  @default(true)
+  notifLessons           Boolean  @default(true)
+  notifHomework          Boolean  @default(true)
+  notifAttendance        Boolean  @default(true)
+  notifPayments          Boolean  @default(true)
+  notifProduct           Boolean  @default(false)
+  quietHoursEnabled      Boolean  @default(true)
+  quietHoursStart        String   @default("22:00")
+  quietHoursEnd          String   @default("07:00")
+  updatedAt              DateTime @updatedAt
+
+  @@index([userId, updatedAt])
+}
+
+// Append-only consent history; rows are never updated or deleted by the API
+model ConsentEvent {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      String // 'terms_accepted' | 'analytics_consent' | 'product_messages_consent'
+  value     String // 'granted' | 'withdrawn' | 'accepted'
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
 }
