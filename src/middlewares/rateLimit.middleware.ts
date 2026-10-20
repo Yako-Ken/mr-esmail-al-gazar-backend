@@ -3,7 +3,7 @@ import rateLimit, { ipKeyGenerator, MemoryStore } from 'express-rate-limit';
 // Login/register: enough headroom for real typos, tight enough to blunt brute force.
 export const authRateLimit = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: 10,
+  limit: 100,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many attempts. Please try again later.' },
