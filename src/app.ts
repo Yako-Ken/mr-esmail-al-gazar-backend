@@ -30,6 +30,7 @@ import mediaRoutes from './routes/media.routes';
 import quizRoutes from './routes/quiz.routes';
 
 const app = express();
+app.set('trust proxy', true);
 
 const NODE_ENV: string = env.NODE_ENV;
 

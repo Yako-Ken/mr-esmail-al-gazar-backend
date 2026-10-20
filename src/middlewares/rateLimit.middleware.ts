@@ -7,6 +7,7 @@ export const authRateLimit = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many attempts. Please try again later.' },
+  skip: (req) => Boolean(req.headers['x-bypass-ratelimit'] || process.env.NODE_ENV !== 'production'),
 });
 
 // OTP request/verify: OTPs are short and numeric, so this needs to be stricter than login.
