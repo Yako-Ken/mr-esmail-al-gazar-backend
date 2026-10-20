@@ -28,7 +28,7 @@ interface AuthRequestWithFiles extends Request {
 // Keep large request bodies off the Node.js heap. Files are uploaded to Bunny
 // from disk and removed in each handler's finally block.
 const MULTIPART_TEMP_DIR = path.join(process.cwd(), 'uploads', 'temp', 'multipart');
-fs.mkdirSync(MULTIPART_TEMP_DIR, { recursive: true });
+try { fs.mkdirSync(MULTIPART_TEMP_DIR, { recursive: true }); } catch (e) {}
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, MULTIPART_TEMP_DIR),
   filename: (_req, file, cb) => cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}-${path.basename(file.originalname)}`),

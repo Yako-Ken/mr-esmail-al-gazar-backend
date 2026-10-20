@@ -10,9 +10,11 @@ const router = Router();
 
 // ── Multer — stores course thumbnails in organized subdirectory ──────────────
 const COURSE_THUMBNAILS_DIR = path.join(process.cwd(), 'uploads', 'thumbnails', 'course-thumbnails');
-if (!fs.existsSync(COURSE_THUMBNAILS_DIR)) {
-  fs.mkdirSync(COURSE_THUMBNAILS_DIR, { recursive: true });
-}
+try {
+  if (!fs.existsSync(COURSE_THUMBNAILS_DIR)) {
+    fs.mkdirSync(COURSE_THUMBNAILS_DIR, { recursive: true });
+  }
+} catch (e) {}
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => {
