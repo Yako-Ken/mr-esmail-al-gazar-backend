@@ -16,7 +16,7 @@ const envSchema = z.object({
     {
       message: 'JWT_SECRET is still set to the default placeholder value',
     }),
-  ALLOWED_ORIGINS: z.string().default(''),
+  ALLOWED_ORIGINS: z.string().default('https://elgazar.edu,https://b4a.run,http://localhost'),
   EMAIL_USER: z.string().optional(),
   EMAIL_PASS: z.string().optional(),
   BUNNY_STORAGE_ZONE_NAME: z.string().optional(),
