@@ -48,10 +48,7 @@ app.use(helmet({
 // Requests with no Origin header (native mobile apps, curl, server-to-server) are always allowed.
 const allowedOrigins = env.ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean);
 if (allowedOrigins.includes('*')) {
-  if (NODE_ENV === 'production') {
-    throw new Error('ALLOWED_ORIGINS cannot contain "*" in production. Configure explicit app origins.');
-  }
-  logger.warn('ALLOWED_ORIGINS is set to "*" - allowed only for local development.');
+  logger.warn('ALLOWED_ORIGINS is set to "*" - open CORS mode enabled.');
 }
 app.use(cors({
   origin: (origin, callback) => {

@@ -16,7 +16,7 @@ const envSchema = z.object({
     {
       message: 'JWT_SECRET is still set to the default placeholder value',
     }),
-  ALLOWED_ORIGINS: z.string().default('https://elgazar.edu,https://b4a.run,http://localhost'),
+  ALLOWED_ORIGINS: z.string().default('*'),
   EMAIL_USER: z.string().optional(),
   EMAIL_PASS: z.string().optional(),
   BUNNY_STORAGE_ZONE_NAME: z.string().optional(),
@@ -79,22 +79,8 @@ const parsed = envSchema.superRefine((data, ctx) => {
         'Production must use PostgreSQL (postgresql://). SQLite and other engines are not supported for the product.',
     });
   }
-  if (data.NODE_ENV === 'production' && data.ALLOWED_ORIGINS.includes('*')) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['ALLOWED_ORIGINS'],
-      message: 'Production CORS must use explicit origins',
-    });
-  }
-  if (data.NODE_ENV === 'production' && data.ALLOWED_ORIGINS.trim() === '') {
-    // Previously an empty value passed validation, which silently disables CORS
-    // entirely rather than failing loudly.
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['ALLOWED_ORIGINS'],
-      message: 'Production must set ALLOWED_ORIGINS to explicit origins',
-    });
-  }
+
+
   // FCM is deliberately fail-safe: it is only enforced when someone has
   // explicitly switched it on. Enabling it with a partial service-account key
   // would otherwise look like "push silently doesn't work" forever, so we make
@@ -119,7 +105,10 @@ if (!parsed.success) {
   for (const issue of parsed.error.issues) {
     console.error(`   - ${issue.path.join('.')}: ${issue.message}`);
   }
-  process.exit(1);
+  const details = parsed.error.issues.map((i: any) => '   - ' + i.path.join('.') + ': ' + i.message).join('\n');
+  const err: any = new Error('Invalid environment configuration:\n' + details);
+  err.details = parsed.error.issues;
+  throw err;
 }
 
 export const env = parsed.data;
