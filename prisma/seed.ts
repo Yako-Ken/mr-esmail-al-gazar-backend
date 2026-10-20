@@ -1,41 +1,48 @@
+import dotenv from 'dotenv';
 import { PrismaClient } from '@prisma/client';
-import bcrypt from 'bcryptjs';
+
+dotenv.config();
 
 const prisma = new PrismaClient();
 
-const SUPER_ADMIN_PHONE = '01094270799';
-const SUPER_ADMIN_PASSWORD = 'Ahmed1448';
+async function main(): Promise<void> {
+  const phone = process.env.SUPER_ADMIN_PHONE?.trim();
+  const email = process.env.SUPER_ADMIN_EMAIL?.trim().toLowerCase();
+  const passwordHash = process.env.SUPER_ADMIN_PASSWORD_HASH?.trim();
 
-async function main() {
-  console.log('🌱 Starting database seeding...');
-
-  try {
-    // 1. إنشاء أو التأكد من وجود الـ Super Admin
-    console.log('--- Checking Super Admin ---');
-    const hashedPassword = await bcrypt.hash(SUPER_ADMIN_PASSWORD, 10);
-    const superAdmin = await prisma.user.upsert({
-      where: { phone: SUPER_ADMIN_PHONE },
-      update: {},
-      create: {
-        id: 'admin_001',
-        name: 'Super Admin',
-        phone: SUPER_ADMIN_PHONE,
-        password: hashedPassword,
-        role: 'SUPER_ADMIN',
-        isApproved: true,
-        isVerified: true,
-      },
-    });
-    console.log('✅ Super Admin ready. ID:', superAdmin.id);
-
-    console.log('\n✨ Seeding completed successfully!');
-
-  } catch (error) {
-    console.error('❌ Seeding failed:', error);
-    process.exit(1);
-  } finally {
-    await prisma.$disconnect();
+  if (!phone || !passwordHash) {
+    console.log('Super Admin seed skipped: credentials are not configured.');
+    return;
   }
+
+  if (!/^\$2[aby]\$\d{2}\$/.test(passwordHash)) {
+    throw new Error('SUPER_ADMIN_PASSWORD_HASH must be a bcrypt hash.');
+  }
+
+  await prisma.user.upsert({
+    where: { phone },
+    update: {},
+    create: {
+      name: 'Super Admin',
+      phone,
+      email: email || null,
+      password: passwordHash,
+      role: 'SUPER_ADMIN',
+      status: 'approved',
+      isApproved: true,
+      isVerified: true,
+      permissions: '["ALL"]',
+    },
+  });
+
+  console.log(`Super Admin seed complete: ${phone}`);
 }
 
-main();
+main()
+  .catch((error) => {
+    console.error('Seeding failed:', error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });

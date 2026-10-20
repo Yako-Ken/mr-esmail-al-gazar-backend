@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import { PrismaClient } from '@prisma/client';
 import app from '../app';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 
 const adminPhone = '01040404040';
 const studentPhone = '01030303031';
@@ -95,7 +95,15 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await prisma.adminAuditEvent.deleteMany({ where: { category: 'content' } });
-  await prisma.course.deleteMany({});
+  // Scoped to this suite's own courses. `deleteMany({})` used to wipe EVERY
+  // course in the database, which in --runInBand destroyed the fixtures of
+  // whichever suite happened to run next. SQLite hid this; PostgreSQL exposed it.
+  await prisma.lesson.deleteMany({
+    where: { courseId: { in: [courseWithLessonId, emptyDraftId] } },
+  });
+  await prisma.course.deleteMany({
+    where: { id: { in: [courseWithLessonId, emptyDraftId] } },
+  });
   await prisma.user.deleteMany({
     where: { phone: { in: [adminPhone, studentPhone, teacherPhone] } },
   });
@@ -124,8 +132,23 @@ describe('admin course listing', () => {
       .get('/api/admin/courses')
       .set(bearer(adminToken));
     expect(response.status).toBe(200);
-    expect(response.body.total).toBe(2);
-    expect(response.body.summary).toMatchObject({ PUBLISHED: 0, DRAFT: 2 });
+
+    // Assert on this suite's own fixtures rather than a global row count.
+    // The endpoint is admin-global by design, so a magic `total` only holds
+    // when this suite is the only writer in the database — which is false the
+    // moment another suite creates a course. The intent of the test is that our
+    // courses come back with correct metadata and a consistent summary.
+    const ours = response.body.courses.filter((c: { id: string }) =>
+      [courseWithLessonId, emptyDraftId].includes(c.id),
+    );
+    expect(ours).toHaveLength(2);
+
+    // Internal consistency is a stronger guarantee than a fixed magic number:
+    // the summary buckets must add up to the reported total.
+    const { PUBLISHED = 0, DRAFT = 0, ARCHIVED = 0 } = response.body.summary ?? {};
+    expect(PUBLISHED + DRAFT + ARCHIVED).toBe(response.body.total);
+    // Both fixtures are created unpublished, so both land in DRAFT.
+    expect(DRAFT).toBeGreaterThanOrEqual(2);
 
     const ready = response.body.courses.find(
       (course: { id: string }) => course.id === courseWithLessonId,
@@ -145,7 +168,17 @@ describe('admin course listing', () => {
       .query({ status: 'DRAFT' })
       .set(bearer(adminToken));
     expect(drafts.status).toBe(200);
-    expect(drafts.body.total).toBe(2);
+
+    // The filter must actually restrict the result set: every returned course
+    // is unpublished, and our two fixtures are among them. Asserting an exact
+    // global `total` would only hold if this suite were the sole writer.
+    // The row shape carries `isPublished` (boolean), not a `status` string.
+    expect(
+      drafts.body.courses.every((c: { isPublished: boolean }) => c.isPublished === false),
+    ).toBe(true);
+    expect(drafts.body.courses.map((c: { id: string }) => c.id)).toEqual(
+      expect.arrayContaining([courseWithLessonId, emptyDraftId]),
+    );
   });
 
   it('rejects invalid status filters', async () => {

@@ -1,65 +1,72 @@
-# Stage 1: Build stage
-FROM node:18-alpine AS builder
+# syntax=docker/dockerfile:1
 
-# تسطيب مكتبات النظام الضرورية لـ Prisma
+# ─── Stage 1: build ──────────────────────────────────────────────────────────
+FROM node:20-alpine AS builder
+
+# Prisma needs OpenSSL on Alpine.
 RUN apk add --no-cache openssl openssl-dev
 
 WORKDIR /app
 
-# Copy package files
-COPY package*.json ./
+# Install dependencies from the lockfile for a reproducible build.
+# npm ci (not npm install) so the image matches package-lock.json exactly.
+# npm is pinned to the version the lockfile was generated with (11.6.2):
+# the stock npm 10 in node:20-alpine resolves optional peer deps differently
+# and fails with "Missing: @emnapi/... from lock file".
+COPY package.json package-lock.json ./
+RUN npm i -g npm@11.6.2 && npm ci
+
 COPY prisma ./prisma/
-
-# Install ALL dependencies
-RUN npm install
-
-# Copy the rest of the application code
-COPY . .
-
-# Generate the Prisma client only. Database migrations and seeding must happen
-# against the runtime database, never against a disposable image-layer SQLite DB.
 RUN npx prisma generate
 
-# Build the TypeScript project
+COPY tsconfig*.json ./
+COPY src ./src
+COPY public ./public/
 RUN npm run build
 
-# Stage 2: Production stage
-FROM node:18-alpine
+# Drop dev dependencies from the tree we are going to copy forward.
+RUN npm prune --omit=dev
 
-# تسطيب مكتبات النظام الضرورية لـ Prisma في النسخة النهائية
-RUN apk add --no-cache openssl openssl-dev
+# ─── Stage 2: runtime ───────────────────────────────────────────────────────
+FROM node:20-alpine AS runtime
+
+RUN apk add --no-cache openssl openssl-dev curl
 
 WORKDIR /app
-
-# Copy package files
-COPY package*.json ./
-
-# Install only production dependencies
-RUN npm install --omit=dev
-
-# Copy built files and migration/schema metadata from the builder stage.
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/prisma ./prisma
-COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
-
-# ⚠️ DO NOT set ENV DATABASE_URL here!
-# The container MUST receive its database connection string at runtime from
-# the platform (Railway variables / docker -e / docker-compose environment).
-# Hard-coding a file-based URL here makes the container look for ./prisma/dev.db
-# inside the image — wiping it on every redeploy.
-#
-# The server is expected to see something like:
-#   railway.app   : postgresql://postgres:<pwd>@postgres.railway.internal:5432/postgres
-#   local docker  : postgresql://postgres:postgres@host.docker.internal:5432/edutech
-#
-# If you intentionally want SQLite for on-prem use, do:
-#   docker run -e DATABASE_URL="file:/data/edutech.db" -v edutech-data:/data ...
-#
-# ENV NODE_ENV=production is fine; PORT is also safe to leave to the platform.
 ENV NODE_ENV=production
 
-# Expose the port (documentation only; Railway injects $PORT)
+COPY package.json package-lock.json ./
+RUN npm i -g npm@11.6.2 && npm ci --omit=dev && npm cache clean --force
+
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/prisma ./prisma
+# Static legal pages (privacy-policy.html, terms.html) are served from disk by
+# web.routes.ts. Without this line production 404s on both — which is exactly
+# what happened on the first Railway deploy: the builder stage HAD public/
+# (it is not dockerignored) but the runtime stage never received it.
+COPY --from=builder /app/public ./public
+
+# ─── PostgreSQL only ─────────────────────────────────────────────────────────
+# The previous image hardcoded ENV DATABASE_URL=file:/app/data/edutech.db, which
+# src/utils/env.ts rejects at boot in production (it now requires a
+# postgresql:// URL). The image therefore could not start. No database URL is
+# baked in at all: Railway/Render inject DATABASE_URL at runtime, and
+# entrypoint runs migrations against that managed instance.
+#
+# No VOLUME either — the database is remote and managed, so a local volume would
+# only imply a persistent disk that nothing writes to.
+RUN addgroup -S nodejs && adduser -S nodejs -G nodejs -u 1001 \
+    && chown -R nodejs:nodejs /app
+
+COPY docker-entrypoint.sh ./docker-entrypoint.sh
+RUN chmod +x ./docker-entrypoint.sh
+
+USER nodejs
+
 EXPOSE 5000
 
-# Start the application using npm start to trigger schema sync
-CMD ["npm", "start"]
+# Migrations run here, not at build time, so they always target the live
+# database rather than a throwaway image layer.
+ENTRYPOINT ["./docker-entrypoint.sh"]
+CMD ["node", "dist/src/server.js"]

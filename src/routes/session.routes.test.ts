@@ -4,7 +4,7 @@ import jwt from 'jsonwebtoken';
 import { PrismaClient } from '@prisma/client';
 import app from '../app';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 const phone = '01090909090';
 
 const login = async (deviceName: string) => {

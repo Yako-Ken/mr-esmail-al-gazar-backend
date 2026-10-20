@@ -11,7 +11,7 @@ import * as lessonService from '../services/lesson.service';
 import { handleControllerError } from '../middlewares/errorHandler';
 
 const router = Router();
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 
 // ─── Multer storage for homework file uploads ─────────────────────────────────
 const homeworkStorage = multer.diskStorage({
@@ -50,7 +50,7 @@ const homeworkUpload = multer({
 
 // ─── GET /api/quiz/pending-essays ───────────────────────────────────────────────
 // MUST be at the TOP to avoid being caught by /:lessonId wildcard route
-const getPendingEssays: RequestHandler = async (req, res): Promise<void> => {
+export const getPendingEssays: RequestHandler = async (req, res): Promise<void> => {
   try {
     const authUser = (req as Request & { user?: AuthUser }).user;
     if (!authUser || authUser.role !== 'TEACHER') {
@@ -298,15 +298,23 @@ export const submitHomework: RequestHandler = async (req, res): Promise<void> =>
         },
       },
       update: {
-        hwStatus: 'PENDING',
+        hwStatus: 'SUBMITTED',
         hwFileUrl,
+        hwSubmittedAt: new Date(),
+        // A resubmission after NEEDS_REVISION returns to SUBMITTED. The
+        // resubmission counter is NOT incremented here: it is incremented when
+        // the teacher returns the work, so it counts returns, not submissions.
       },
       create: {
         studentId: authUser.id,
         lessonId,
-        isPresent: true,
-        hwStatus: 'PENDING',
+        // isPresent is NOT set: attendance has one authoritative source
+        // (AttendanceRecord). Marking a student present as a side effect of
+        // submitting homework made parents see attendance that never happened.
+        hwStatus: 'SUBMITTED',
         hwFileUrl,
+        hwSubmittedAt: new Date(),
+        hwResubmitCount: 0,
       },
     });
 
@@ -334,12 +342,21 @@ export const submitHomework: RequestHandler = async (req, res): Promise<void> =>
 
 export const markAttendance: RequestHandler = async (req, res): Promise<void> => {
   try {
-    const { lessonId } = req.body;
+    const { lessonId, studentId: claimedStudentId } = req.body;
     const authUser = (req as Request & { user?: AuthUser }).user;
     const studentId = authUser?.id;
 
     if (!studentId || authUser?.role !== 'STUDENT') {
       res.status(403).json({ error: 'Students only' });
+      return;
+    }
+
+    // A student may only record their own lesson engagement. The write below
+    // already ignores any id in the body, but returning 200 for a request that
+    // named somebody else told an attacker the call had been honoured. Reject it
+    // explicitly so the client learns the request was refused.
+    if (claimedStudentId && claimedStudentId !== studentId) {
+      res.status(403).json({ error: 'Cannot record attendance for another student' });
       return;
     }
 
@@ -577,8 +594,11 @@ const gradeEssay: RequestHandler = async (req, res): Promise<void> => {
     res.json({
       success:            true,
       quizScore:          updated.quizScore,
-      hwStatus:           updated.hwStatus,
-      needsManualGrading: updated.hwStatus === 'PENDING',
+hwStatus:           updated.hwStatus,
+        // Manual grading is still outstanding while the work is queued for the
+        // teacher (UNDER_REVIEW). PENDING was a legacy value that no longer
+        // exists in the HomeworkStatus vocabulary.
+        needsManualGrading: updated.hwStatus === 'UNDER_REVIEW',
     });
   } catch (error) {
     logger.error('Grade essay error:', error);

@@ -2,8 +2,28 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// ─── Homework lifecycle ──────────────────────────────────────────────────────
+// Approved first-release workflow:
+//   NOT_SUBMITTED → SUBMITTED → UNDER_REVIEW → GRADED
+// with a teacher-initiated return for revision, after which the student
+// resubmits. NEEDS_REVISION is a sub-state of UNDER_REVIEW that permits a
+// resubmission; it is not a terminal state.
+//
+// These five vocabularies previously existed as raw strings compared literally
+// at ~90 call sites, with a fifth disjoint set (APPROVED/REJECTED, which are
+// *enrollment* values) used by the teacher grading endpoint. Enums make an
+// invalid transition a database-level impossibility rather than a string
+// comparison that silently drifts.
+enum HomeworkStatus {
+  NOT_SUBMITTED
+  SUBMITTED
+  UNDER_REVIEW
+  NEEDS_REVISION
+  GRADED
+}
+
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -165,15 +185,19 @@ model Lesson {
   videoLibraryId String? // The Library ID for Bunny Stream
   thumbnailUrl  String?
   pdfUrl        String?
-  description   String?
-  homeworkText  String?
-  homeworkPdfUrl String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  quizzes       Quiz[]                @relation("LessonQuizzes")
-  trackings     Tracking[]            @relation("LessonTrackings")
-  progresses    LessonProgress[]      @relation("LessonProgress")
-}
+    description   String?
+    homeworkText  String?
+    homeworkPdfUrl String?
+    // Deadline for this lesson's homework. Stored as UTC; the client renders it
+    // in Africa/Cairo (UTC+2, no DST). Per-lesson rather than per-course so a
+    // teacher can stagger deadlines across a course.
+    homeworkDueAt DateTime?
+    createdAt     DateTime @default(now())
+    updatedAt     DateTime @updatedAt
+    quizzes       Quiz[]                @relation("LessonQuizzes")
+    trackings     Tracking[]            @relation("LessonTrackings")
+    progresses    LessonProgress[]      @relation("LessonProgress")
+  }
 
 model Quiz {
   id        String   @id @default(uuid())
@@ -189,15 +213,31 @@ model Tracking {
   lessonId    String
   lesson      Lesson    @relation("LessonTrackings", fields: [lessonId], references: [id], onDelete: Cascade)
   isPresent   Boolean   @default(false)
-  hwStatus    String    @default("NOT_SUBMITTED")
+  // Homework lifecycle. NOT_SUBMITTED is the default; the enum prevents the
+  // illegal values that raw strings previously allowed.
+  hwStatus    HomeworkStatus @default(NOT_SUBMITTED)
   essayStatus String    @default("NOT_SUBMITTED")
   hwFileUrl   String?
+  // Teacher assessment, applied when hwStatus reaches GRADED.
+  hwGrade       Int?
+  hwMaxGrade    Int?
+  hwComment     String?
+  hwGradedAt    DateTime?
+  // How many times the teacher has returned this for revision. Bounded by
+  // MAX_RESUBMISSIONS so a submission cannot loop forever.
+  hwResubmitCount Int      @default(0)
+  // Submission timestamps, kept so late work can be marked rather than rejected.
+  hwSubmittedAt   DateTime?
+  hwGradedById    String?
   quizScore   Int?
   essayAnswers String?  // JSON string storing student's essay answers
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
   @@unique([studentId, lessonId])
+  // Supports the teacher's grading queue: all submissions awaiting review.
+  @@index([hwStatus])
+  @@index([lessonId, hwStatus])
 }
 
 model AttendanceSession {

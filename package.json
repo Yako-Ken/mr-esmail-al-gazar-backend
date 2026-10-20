@@ -1,55 +1,61 @@
 {
-  "name": "lms-backend",
-  "version": "1.0.0",
-  "description": "Node.js/Express LMS Backend",
-  "main": "dist/server.js",
-  "scripts": {
-    "build": "tsc",
-    "start": "npx prisma generate && npx prisma migrate deploy && node dist/src/server.js",
-    "dev": "ts-node src/server.ts",
-    "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev",
-    "prisma:seed": "ts-node prisma/seed.ts",
-    "prisma:seed:demo": "ts-node prisma/seed-demo.ts",
-    "test": "jest"
-  },
-  "dependencies": {
-    "@prisma/client": "^5.10.0",
-    "axios": "^1.16.0",
-    "bcryptjs": "^2.4.3",
-    "cors": "^2.8.6",
-    "dotenv": "^16.4.1",
-    "express": "^4.22.1",
-    "express-rate-limit": "^8.6.0",
-    "helmet": "^8.3.0",
-    "jsonwebtoken": "^9.0.2",
-    "multer": "^1.4.5-lts.1",
-    "node-cron": "^4.2.1",
-    "nodemailer": "^9.0.5",
-    "prisma": "^5.10.0",
-    "socket.io": "^4.8.3",
-    "zod": "^3.22.4"
-  },
-  "devDependencies": {
-    "@types/bcryptjs": "^2.4.6",
-    "@types/cors": "^2.8.19",
-    "@types/express": "^4.17.21",
-    "@types/jest": "^30.0.0",
-    "@types/jsonwebtoken": "^9.0.5",
-    "@types/multer": "^1.4.13",
-    "@types/node": "^20.19.37",
-    "@types/node-cron": "^3.0.11",
-    "@types/nodemailer": "^8.0.0",
-    "@types/qrcode-terminal": "^0.12.2",
-    "@types/socket.io": "^3.0.1",
-    "@types/supertest": "^7.2.1",
-    "jest": "^30.4.2",
-    "supertest": "^7.2.2",
-    "ts-jest": "^29.4.11",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.3.3"
-  },
-  "prisma": {
-    "seed": "ts-node prisma/seed.ts"
-  }
+    "name":  "lms-backend",
+    "version":  "1.0.0",
+    "description":  "Node.js/Express LMS Backend",
+    "main":  "dist/src/server.js",
+    "scripts":  {
+                    "build":  "tsc",
+                    "start":  "npx prisma generate \u0026\u0026 npx prisma migrate deploy \u0026\u0026 node dist/src/server.js",
+                    "dev":  "ts-node src/server.ts",
+                    "prisma:generate":  "prisma generate",
+                    "prisma:migrate":  "prisma migrate dev",
+                    "prisma:seed":  "ts-node prisma/seed.ts",
+                    "prisma:seed:demo":  "ts-node prisma/seed-demo.ts",
+                    "test":  "jest",
+                    "db:migrate:deploy":  "prisma migrate deploy",
+                    "db:migrate:status":  "prisma migrate status",
+                    "db:reset:test":  "prisma db push --force-reset --skip-generate"
+                },
+    "dependencies":  {
+                         "@prisma/client":  "^5.10.0",
+                         "axios":  "^1.20.0",
+                         "bcryptjs":  "^2.4.3",
+                         "cors":  "^2.8.6",
+                         "dotenv":  "^16.4.1",
+                         "express":  "^4.22.1",
+                         "express-rate-limit":  "^8.6.0",
+                         "helmet":  "^8.3.0",
+                         "jsonwebtoken":  "^9.0.2",
+                         "multer":  "^1.4.5-lts.1",
+                         "node-cron":  "^4.2.1",
+                         "nodemailer":  "^10.0.13",
+                         "prisma":  "^5.10.0",
+                         "socket.io":  "^4.8.3",
+                         "zod":  "^3.22.4"
+                     },
+    "devDependencies":  {
+                            "@types/bcryptjs":  "^2.4.6",
+                            "@types/cors":  "^2.8.19",
+                            "@types/express":  "^4.17.21",
+                            "@types/jest":  "^30.0.0",
+                            "@types/jsonwebtoken":  "^9.0.5",
+                            "@types/multer":  "^1.4.13",
+                            "@types/node":  "^20.19.37",
+                            "@types/node-cron":  "^3.0.11",
+                            "@types/nodemailer":  "^8.0.0",
+                            "@types/qrcode-terminal":  "^0.12.2",
+                            "@types/socket.io":  "^3.0.1",
+                            "@types/supertest":  "^7.2.1",
+                            "jest":  "^30.4.2",
+                            "supertest":  "^7.2.2",
+                            "ts-jest":  "^29.4.11",
+                            "ts-node":  "^10.9.2",
+                            "typescript":  "^5.3.3"
+                        },
+    "prisma":  {
+                   "seed":  "ts-node prisma/seed.ts"
+               },
+    "overrides":  {
+                      "proxy-addr":  "2.0.8"
+                  }
 }

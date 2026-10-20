@@ -1,12 +1,14 @@
 import { Router, Request, Response, RequestHandler } from 'express';
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
-import { authMiddleware, AuthUser } from '../middlewares/auth.middleware';
+import { authMiddleware, AuthUser, isApprovedUser } from '../middlewares/auth.middleware';
+import { roleMiddleware } from '../middlewares/role.middleware';
 import { getTeacherEnrollments, updateEnrollmentStatus, enrollStudentByTeacher } from '../controllers/enrollment.controller';
-import { getTeacherStudents, removeStudentEnrollment, getTeacherCoursesForGrading, getCourseAssignments, getCourseQuizzes, getAssignmentSubmissions, updateSubmissionStatus } from '../controllers/student.controller';
+import { getTeacherStudents, removeStudentEnrollment, getTeacherCoursesForGrading, getCourseAssignments, getCourseQuizzes, getAssignmentSubmissions, updateSubmissionStatus, getHomeworkRegister, gradeHomework, returnHomework, startHomeworkReview } from '../controllers/student.controller';
 import { logger } from '../utils/logger';
+import { maskName } from '../utils/redact';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 
 export const createTeacher: RequestHandler = async (req, res): Promise<void> => {
   try {
@@ -436,7 +438,7 @@ export const deleteAssistant: RequestHandler = async (req, res): Promise<void> =
 
     await prisma.user.delete({ where: { id } });
 
-    logger.info('Assistant deleted:', { id, name: assistant.name, by: authUser.id });
+    logger.info('Assistant deleted:', { id, name: maskName(assistant.name), by: authUser.id });
     res.json({ message: 'Assistant deleted successfully' });
   } catch (error) {
     logger.error('Delete assistant error:', error);
@@ -447,23 +449,23 @@ export const deleteAssistant: RequestHandler = async (req, res): Promise<void> =
 const router = Router();
 
 // Teacher account creation (Super Admin only)
-router.post('/teachers', authMiddleware, createTeacher);
+router.post('/teachers', authMiddleware, roleMiddleware('SUPER_ADMIN'), isApprovedUser, createTeacher);
 
 // Stats
-router.get('/stats', authMiddleware, getTeacherStats);
+router.get('/stats', authMiddleware, roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'), isApprovedUser, getTeacherStats);
 
 // Assistant management
-router.post('/assistants', authMiddleware, createAssistant);
-router.get('/assistants', authMiddleware, getAssistants);
-router.delete('/assistants/:id', authMiddleware, deleteAssistant);
+router.post('/assistants', authMiddleware, roleMiddleware('TEACHER', 'SUPER_ADMIN'), isApprovedUser, createAssistant);
+router.get('/assistants', authMiddleware, roleMiddleware('TEACHER', 'SUPER_ADMIN'), isApprovedUser, getAssistants);
+router.delete('/assistants/:id', authMiddleware, roleMiddleware('TEACHER', 'SUPER_ADMIN'), isApprovedUser, deleteAssistant);
 
 // Enrollments (Payment Approvals)
-router.get('/enrollments', authMiddleware, getTeacherEnrollments);
-router.put('/enrollments/:id', authMiddleware, updateEnrollmentStatus);
+router.get('/enrollments', authMiddleware, roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'), isApprovedUser, getTeacherEnrollments);
+router.put('/enrollments/:id', authMiddleware, roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'), isApprovedUser, updateEnrollmentStatus);
 
 // Webhook-driven sales. Manual receipt approval endpoints are intentionally removed.
-router.get('/payments/summary', authMiddleware, getTeacherSalesSummary);
-router.get('/payments/settlements', authMiddleware, getTeacherSettlements);
+router.get('/payments/summary', authMiddleware, roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'), isApprovedUser, getTeacherSalesSummary);
+router.get('/payments/settlements', authMiddleware, roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'), isApprovedUser, getTeacherSettlements);
 router.all('/payments/pending', authMiddleware, (_req, res) => res.status(410).json({
   error: 'Manual payment approvals are no longer supported.',
   code: 'MANUAL_PAYMENTS_REMOVED',
@@ -482,15 +484,48 @@ router.all('/payments/:id/reject', authMiddleware, (_req, res) => res.status(410
 }));
 
 // Student management
-router.get('/students', authMiddleware, getTeacherStudents);
-router.post('/students/:studentId/enroll', authMiddleware, enrollStudentByTeacher);
-router.post('/students/:studentId/courses/:courseId/remove', authMiddleware, removeStudentEnrollment);
+router.get('/students', authMiddleware, roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'), isApprovedUser, getTeacherStudents);
+router.post('/students/:studentId/enroll', authMiddleware, roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'), isApprovedUser, enrollStudentByTeacher);
+router.post('/students/:studentId/courses/:courseId/remove', authMiddleware, roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'), isApprovedUser, removeStudentEnrollment);
 
 // Homework Correction - 3-Level Hierarchy
-router.get('/courses', authMiddleware, getTeacherCoursesForGrading);
-router.get('/courses/:courseId/assignments', authMiddleware, getCourseAssignments);
-router.get('/courses/:courseId/quizzes', authMiddleware, getCourseQuizzes);
-router.get('/assignments/:assignmentId/submissions', authMiddleware, getAssignmentSubmissions);
-router.post('/assignments/:assignmentId/status', authMiddleware, updateSubmissionStatus);
+router.get('/courses', authMiddleware, roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'), isApprovedUser, getTeacherCoursesForGrading);
+router.get('/courses/:courseId/assignments', authMiddleware, roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'), isApprovedUser, getCourseAssignments);
+router.get('/courses/:courseId/quizzes', authMiddleware, roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'), isApprovedUser, getCourseQuizzes);
+router.get('/assignments/:assignmentId/submissions', authMiddleware, roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'), isApprovedUser, getAssignmentSubmissions);
+router.post('/assignments/:assignmentId/status', authMiddleware, roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'), isApprovedUser, updateSubmissionStatus);
+
+// Homework lifecycle. Separate endpoints rather than one status endpoint with a
+// free-text status, because each move carries different required data: grading
+// needs a mark, returning needs feedback. A single status field could not
+// express that, which is how a submission could be "graded" with no grade.
+router.get(
+  '/assignments/:assignmentId/register',
+  authMiddleware,
+  roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'),
+  isApprovedUser,
+  getHomeworkRegister,
+);
+router.post(
+  '/assignments/:assignmentId/grade',
+  authMiddleware,
+  roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'),
+  isApprovedUser,
+  gradeHomework,
+);
+router.post(
+  '/assignments/:assignmentId/return',
+  authMiddleware,
+  roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'),
+  isApprovedUser,
+  returnHomework,
+);
+router.post(
+  '/assignments/:assignmentId/review',
+  authMiddleware,
+  roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'),
+  isApprovedUser,
+  startHomeworkReview,
+);
 
 export default router;

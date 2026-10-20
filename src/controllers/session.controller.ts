@@ -3,7 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { AuthUser } from '../middlewares/auth.middleware';
 import { logger } from '../utils/logger';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 
 type AuthenticatedRequest = Request & { user?: AuthUser };
 

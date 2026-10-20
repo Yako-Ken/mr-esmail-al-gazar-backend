@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import { PrismaClient } from '@prisma/client';
 import app from '../app';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 
 const teacherPhone = '01020202021';
 const otherTeacherPhone = '01020202022';
@@ -146,12 +146,36 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await prisma.refund.deleteMany({});
-  await prisma.paymentOrder.deleteMany({});
-  await prisma.course.deleteMany({});
-  await prisma.user.deleteMany({
+  // Scoped to this suite's teachers. `deleteMany({})` used to erase every
+  // refund, order and course in the database, wiping the fixtures of whichever
+  // suite ran next in --runInBand. PostgreSQL surfaced the collision.
+  const myTeachers = await prisma.user.findMany({
     where: { phone: { in: [teacherPhone, otherTeacherPhone, studentPhone] } },
+    select: { id: true },
   });
+  const myTeacherIds = myTeachers.map((u) => u.id);
+
+  const myCourses = await prisma.course.findMany({
+    where: { teacherId: { in: myTeacherIds } },
+    select: { id: true },
+  });
+  const myCourseIds = myCourses.map((c) => c.id);
+
+  const myOrders = await prisma.paymentOrder.findMany({
+    where: { studentId: { in: myTeacherIds }, courseId: { in: myCourseIds } },
+    select: { id: true },
+  });
+  const myOrderIds = myOrders.map((o) => o.id);
+
+  // PaymentOrder/PaymentAttempt/PaymentEvent/Refund hold plain columns, not
+  // Prisma relations (commerce has no foreign keys), so scope by collected ids.
+  await prisma.refund.deleteMany({ where: { paymentOrderId: { in: myOrderIds } } });
+  await prisma.paymentAttempt.deleteMany({ where: { paymentOrderId: { in: myOrderIds } } });
+  await prisma.paymentEvent.deleteMany({ where: { paymentOrderId: { in: myOrderIds } } });
+  await prisma.paymentOrder.deleteMany({ where: { id: { in: myOrderIds } } });
+  await prisma.lesson.deleteMany({ where: { courseId: { in: myCourseIds } } });
+  await prisma.course.deleteMany({ where: { id: { in: myCourseIds } } });
+  await prisma.user.deleteMany({ where: { id: { in: myTeacherIds } } });
   await prisma.$disconnect();
 });
 

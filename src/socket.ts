@@ -6,7 +6,7 @@ import { logger } from './utils/logger';
 import { env } from './utils/env';
 
 let io: Server | null = null;
-const prisma = new PrismaClient();
+import prisma from './config/prisma';
 
 /**
  * Extract a clean JWT from a raw string that may carry accidental

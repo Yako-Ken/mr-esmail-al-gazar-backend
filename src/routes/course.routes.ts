@@ -56,8 +56,11 @@ router.post(
   createCourse,
 );
 
-// GET /api/courses/:id  — public single-course view
-router.get('/:id', getCourseById);
+// GET /api/courses/:id  — single-course view
+// Auth is REQUIRED: the payload embeds the teacher's payout identifiers
+// (vodafoneCashNumber / instapayHandle), which must never reach an anonymous
+// caller. The public catalogue surface is GET /api/store/courses[/:id].
+router.get('/:id', authMiddleware, getCourseById);
 
 // PUT /api/courses/:id  — update course (owner or admin)
 router.put('/:id', authMiddleware, canManageContent, updateCourse);

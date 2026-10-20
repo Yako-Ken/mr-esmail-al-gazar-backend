@@ -5,7 +5,7 @@ import { env } from '../utils/env';
 import { generateParentLinkCode, hashParentLinkCode } from '../utils/linkCode';
 import { secureDigestEqual } from '../utils/otp';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 
 export const createParentLinkCode = async (req: Request, res: Response): Promise<void> => {
   try {

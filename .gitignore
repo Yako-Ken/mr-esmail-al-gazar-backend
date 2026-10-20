@@ -8,3 +8,5 @@ coverage/
 full_project_code.txt
 full_code.txt
 *.log
+# local throwaway PostgreSQL test connection string
+.env.test.local

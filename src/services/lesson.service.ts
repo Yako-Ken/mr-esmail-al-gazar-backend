@@ -2,9 +2,10 @@ import { PrismaClient, Tracking } from '@prisma/client';
 import { AuthUser } from '../middlewares/auth.middleware';
 import { resolveOwnerId } from '../utils/ownerId';
 import { NotFoundError, ForbiddenError, BadRequestError } from '../utils/appError';
+import { MAX_RESUBMISSIONS } from './homework.service';
 import { logger } from '../utils/logger';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 
 interface QuizQuestion {
   question: string;
@@ -62,6 +63,74 @@ export const markAttendance = (studentId: string, lessonId: string) => {
     where: { studentId_lessonId: { studentId, lessonId } },
     update: { isPresent: true },
     create: { studentId, lessonId, isPresent: true },
+  });
+};
+
+export const getTracking = (studentId: string, lessonId: string) =>
+  prisma.tracking.findUnique({
+    where: { studentId_lessonId: { studentId, lessonId } },
+  });
+
+export const submitHomework = async (studentId: string, lessonId: string, answer: string) => {
+  const cleanAnswer = answer.trim();
+  if (!cleanAnswer) throw new BadRequestError('Answer is required');
+
+  const lesson = await prisma.lesson.findUnique({
+    where: { id: lessonId },
+    select: { homeworkDueAt: true },
+  });
+  if (!lesson) throw new NotFoundError('Lesson not found');
+
+  const now = new Date();
+
+  // Late work is accepted and marked, not rejected: the mark is what the parent
+  // and the teacher need, and silently refusing a student's work loses it.
+  // The deadline is enforced only in the sense that being late is recorded.
+  const isLate = lesson.homeworkDueAt !== null && lesson.homeworkDueAt !== undefined
+    ? now > lesson.homeworkDueAt
+    : false;
+
+  const existing = await prisma.tracking.findUnique({
+    where: { studentId_lessonId: { studentId, lessonId } },
+    select: { hwStatus: true, hwResubmitCount: true },
+  });
+
+  // A resubmission is only a resubmission after a return for revision. A first
+  // submission is NOT_SUBMITTED -> SUBMITTED and must not consume the budget.
+  const isResubmission = existing?.hwStatus === 'NEEDS_REVISION';
+
+  if (isResubmission && (existing?.hwResubmitCount ?? 0) >= MAX_RESUBMISSIONS) {
+    throw new BadRequestError(
+      `Resubmission limit reached (${MAX_RESUBMISSIONS}). Contact your teacher.`,
+    );
+  }
+
+  const payload = {
+    hwStatus: 'SUBMITTED' as const,
+    essayStatus: 'PENDING',
+    essayAnswers: JSON.stringify({
+      answer: cleanAnswer,
+      submittedAt: now.toISOString(),
+      late: isLate,
+    }),
+    hwSubmittedAt: now,
+  };
+
+  return prisma.tracking.upsert({
+    where: { studentId_lessonId: { studentId, lessonId } },
+    update: {
+      ...payload,
+      // Only a genuine resubmission increments. This previously always wrote 0,
+      // so the counter could never reach the limit and a student could resubmit
+      // an unbounded number of times.
+      ...(isResubmission ? { hwResubmitCount: { increment: 1 } } : {}),
+    },
+    create: {
+      studentId,
+      lessonId,
+      ...payload,
+      hwResubmitCount: 0,
+    },
   });
 };
 
@@ -224,6 +293,16 @@ export const fetchStudents = async (authUser: AuthUser) => {
     },
   });
 
+  // `isPresent` is reported as null for every lesson, deliberately.
+  //
+  // There is no relationship in the schema between a lesson and an attendance
+  // session, so lesson-level attendance is not derivable and must not be
+  // reported. This field previously carried Tracking.isPresent, a legacy
+  // engagement flag, which read as an attendance claim: a student flagged by any
+  // unrelated write looked present, and a student scanned in by the teacher
+  // looked absent. Matching sessions to lessons by subject and grade was tried
+  // and rejected — it is a guess, not an observation. Per-student attendance is
+  // served from AttendanceRecord by AnalyticsService and the session register.
   const studentMap = new Map<string, Record<string, unknown>>();
 
   lessons.forEach((lesson) => {
@@ -244,7 +323,7 @@ export const fetchStudents = async (authUser: AuthUser) => {
           title: lesson.title,
           subject: lesson.subject,
           grade: lesson.grade,
-          isPresent: tracking.isPresent,
+          isPresent: null,
           hwStatus: tracking.hwStatus,
           quizScore: tracking.quizScore,
         });
@@ -261,6 +340,7 @@ export const fetchStudents = async (authUser: AuthUser) => {
 export const listLessons = (filters: LessonListFilters) => {
   return prisma.lesson.findMany({
     where: {
+      course: { isPublished: true },
       ...(filters.subject ? { subject: filters.subject } : {}),
       ...(filters.grade ? { grade: filters.grade } : {}),
       ...(filters.teacherId ? { teacherId: filters.teacherId } : {}),
@@ -299,16 +379,21 @@ export const createLesson = async (authUser: AuthUser, body: LessonInput) => {
     throw new BadRequestError('Title, courseId, and a video source are required');
   }
 
-  // Fetch subject and grade from the associated course
-  const course = await prisma.course.findUnique({ where: { id: cleanCourseId } });
+  const ownerId = resolveOwnerId(authUser);
+
+  // The course must belong to the acting teacher (assistants resolve to their
+  // parent teacher). Super admins may manage any course.
+  const course = await prisma.course.findFirst({
+    where: authUser.role === 'SUPER_ADMIN'
+      ? { id: cleanCourseId }
+      : { id: cleanCourseId, teacherId: ownerId },
+  });
   if (!course) {
-    throw new BadRequestError('Course not found');
+    throw new ForbiddenError('Course not found or not owned by this account');
   }
 
   const cleanSubject = subject?.toString()?.trim() || course.subject || null;
   const cleanGrade = grade?.toString()?.trim() || course.grade || null;
-
-  const ownerId = resolveOwnerId(authUser);
 
   // Convert string booleans to actual booleans (optional)
   const isQuizAttached = hasQuiz === 'true' || hasQuiz === true;
@@ -427,6 +512,7 @@ export const getLessonById = async (id: string, authUser?: AuthUser) => {
     where: { id },
     include: {
       teacher: { select: { id: true, name: true } },
+      course: { select: { isPublished: true } },
       quizzes: true,
     },
   });
@@ -443,8 +529,8 @@ export const getLessonById = async (id: string, authUser?: AuthUser) => {
       where: { studentId_lessonId: { studentId: authUser.id, lessonId: id } },
     });
 
-    if (!lesson.courseId) {
-      throw new ForbiddenError('Lessons without a valid course access are locked');
+    if (!lesson.courseId || !lesson.course?.isPublished) {
+      throw new ForbiddenError('This lesson is not available to students');
     }
     const enrollment = await prisma.courseEnrollment.findUnique({
       where: { studentId_courseId: { studentId: authUser.id, courseId: lesson.courseId } },

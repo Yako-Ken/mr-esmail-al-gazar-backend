@@ -3,7 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { AuthUser } from '../middlewares/auth.middleware';
 import { logger } from '../utils/logger';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 
 const formatUrl = (baseUrl: string, url: string | null | undefined) => {
   if (!url) return null;
@@ -193,7 +193,14 @@ export const submitCheckout: RequestHandler = async (req, res): Promise<void> =>
       return;
     }
 
-    const course = await prisma.course.findUnique({ where: { id: courseId } });
+    const course = await prisma.course.findFirst({
+      where: {
+        id: courseId,
+        isPublished: true,
+        lessons: { some: {} },
+        teacher: { isApproved: true },
+      },
+    });
     if (!course) {
       res.status(404).json({ error: 'Course not found' });
       return;

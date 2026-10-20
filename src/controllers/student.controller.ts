@@ -1,8 +1,10 @@
 import { Request, Response, RequestHandler } from 'express';
 import { AuthUser } from '../middlewares/auth.middleware';
 import { handleControllerError } from '../middlewares/errorHandler';
-import { getBaseUrl, toAbsoluteUploadUrl } from '../utils/urls';
+import { getBaseUrl, toAbsoluteUploadUrl, toProtectedMediaUrl } from '../utils/urls';
+import { logger } from '../utils/logger';
 import * as studentService from '../services/student.service';
+import * as homeworkService from '../services/homework.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/students/my-dashboard
@@ -73,7 +75,34 @@ export const getTeacherStudents: RequestHandler = async (req, res): Promise<void
     }
 
     const result = await studentService.getTeacherStudents(authUser);
-    res.json(result);
+
+    // `getTeacherStudents` returns each enrolled student's own phone and email
+    // plus `parentPhone` — the contact number of that student's *guardian*.
+    // The teacher's entitlement is to reach their own student, which the phone
+    // and email already cover. A roster listing every enrolled student is a bulk
+    // export of third-party contact details, so the guardian number is dropped
+    // here rather than in the service.
+    const projected = (result as {
+      id: string;
+      name: string;
+      phone: string;
+      email: string | null;
+      parentPhone?: string | null;
+      courses: unknown;
+    }[]).map((student) => ({
+      id: student.id,
+      name: student.name,
+      phone: student.phone,
+      email: student.email,
+      courses: student.courses,
+    }));
+
+    logger.info('[GET /teachers/students] roster projected', {
+      total: projected.length,
+      by: authUser.id,
+    });
+
+    res.json(projected);
   } catch (error) {
     handleControllerError('getTeacherStudents', error, res);
   }
@@ -181,7 +210,7 @@ export const getAssignmentSubmissions: RequestHandler = async (req, res): Promis
         ? s.hwFileUrl.split(',').map((url) => {
             const trimmed = url.trim();
             if (!trimmed) return '';
-            return trimmed.startsWith('http') ? trimmed : `${baseUrl}/${trimmed}`;
+            return toProtectedMediaUrl(baseUrl, trimmed) ?? '';
           }).filter((u) => u).join(',')
         : null,
     }));
@@ -196,7 +225,102 @@ export const getAssignmentSubmissions: RequestHandler = async (req, res): Promis
 // POST /api/teachers/assignments/:assignmentId/status
 // Approve or reject a student submission (File Verification Workflow)
 // ─────────────────────────────────────────────────────────────────────────────
-export const updateSubmissionStatus: RequestHandler = async (req, res): Promise<void> => {
+/**
+   * Grade a submission. Grade and maxGrade are both mandatory — a submission
+   * marked GRADED with no mark is what made "graded" meaningless to a parent
+   * reading the dashboard.
+   */
+  export const gradeHomework: RequestHandler = async (req, res): Promise<void> => {
+    try {
+      const authUser = (req as Request & { user?: AuthUser }).user;
+      if (!authUser) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const { assignmentId } = req.params;
+      const { studentId, grade, maxGrade, comment } = req.body as {
+        studentId?: string;
+        grade?: number;
+        maxGrade?: number;
+        comment?: string;
+      };
+
+      const result = await homeworkService.gradeHomework(
+        authUser,
+        assignmentId,
+        studentId,
+        grade,
+        maxGrade,
+        comment,
+      );
+      res.json({ message: 'Homework graded', result });
+    } catch (error) {
+      handleControllerError('gradeHomework', error, res);
+    }
+  };
+
+  /** Return a submission for revision. Feedback is mandatory. */
+  export const returnHomework: RequestHandler = async (req, res): Promise<void> => {
+    try {
+      const authUser = (req as Request & { user?: AuthUser }).user;
+      if (!authUser) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const { assignmentId } = req.params;
+      const { studentId, comment } = req.body as { studentId?: string; comment?: string };
+
+      const result = await homeworkService.returnHomework(
+        authUser,
+        assignmentId,
+        studentId,
+        comment,
+      );
+      res.json({ message: 'Homework returned for revision', result });
+    } catch (error) {
+      handleControllerError('returnHomework', error, res);
+    }
+  };
+
+  /** Move a submission into review. */
+  export const startHomeworkReview: RequestHandler = async (req, res): Promise<void> => {
+    try {
+      const authUser = (req as Request & { user?: AuthUser }).user;
+      if (!authUser) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const { assignmentId } = req.params;
+      const { studentId } = req.body as { studentId?: string };
+
+      const result = await homeworkService.startReview(authUser, assignmentId, studentId);
+      res.json({ message: 'Review started', result });
+    } catch (error) {
+      handleControllerError('startHomeworkReview', error, res);
+    }
+  };
+
+  /** Full register for one assignment: every enrolled student's real state. */
+  export const getHomeworkRegister: RequestHandler = async (req, res): Promise<void> => {
+    try {
+      const authUser = (req as Request & { user?: AuthUser }).user;
+      if (!authUser) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const { assignmentId } = req.params;
+      const result = await homeworkService.getHomeworkRegister(authUser, assignmentId);
+      res.json(result);
+    } catch (error) {
+      handleControllerError('getHomeworkRegister', error, res);
+    }
+  };
+
+  export const updateSubmissionStatus: RequestHandler = async (req, res): Promise<void> => {
   try {
     const authUser = (req as Request & { user?: AuthUser }).user;
     if (!authUser) {

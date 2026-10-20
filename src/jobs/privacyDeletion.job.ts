@@ -2,7 +2,7 @@ import { PrismaClient } from '@prisma/client';
 import { executeDueAccountDeletions } from '../services/privacy.service';
 import { logger } from '../utils/logger';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 
 export const runPrivacyDeletionJob = async (): Promise<void> => {
   try {

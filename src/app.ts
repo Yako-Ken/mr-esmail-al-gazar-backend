@@ -26,6 +26,8 @@ import notificationRoutes from './routes/notification.routes';
 import webRoutes from './routes/web.routes';
 import whatsappRoutes from './routes/whatsapp.routes';
 import { getSubjects } from './controllers/admin.controller';
+import mediaRoutes from './routes/media.routes';
+import quizRoutes from './routes/quiz.routes';
 
 const app = express();
 
@@ -71,14 +73,16 @@ app.use(cors({
   ],
 }));
 
-// 2. BODY PARSERS (before routes). File uploads go through multer (memory storage,
-// see upload.routes.ts) with their own 500MB limit - this only covers plain JSON/form bodies.
+// 2. BODY PARSERS (before routes). File uploads go through disk-backed multer
+// in upload.routes.ts; this only covers plain JSON/form bodies.
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// 3. STATIC FILES - Serve uploads directory with proper CORS headers
+// 3. PUBLIC STATIC FILES — thumbnails only. Videos, PDFs, receipts and
+// homework submissions are private and must be served through /api/media.
 const uploadsDir = path.join(process.cwd(), 'uploads');
-app.use('/uploads', express.static(uploadsDir, {
+const publicThumbnailsDir = path.join(uploadsDir, 'thumbnails');
+app.use('/uploads/thumbnails', express.static(publicThumbnailsDir, {
   maxAge: '1d',
   etag: true,
   lastModified: true,
@@ -86,12 +90,22 @@ app.use('/uploads', express.static(uploadsDir, {
     const ext = path.extname(filePath).toLowerCase();
     if (ext === '.jpg' || ext === '.jpeg') res.setHeader('Content-Type', 'image/jpeg');
     else if (ext === '.png') res.setHeader('Content-Type', 'image/png');
-    else if (ext === '.pdf') res.setHeader('Content-Type', 'application/pdf');
-    // Add CORS headers for static files
+    else if (ext === '.webp') res.setHeader('Content-Type', 'image/webp');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   },
 }));
+
+if (NODE_ENV !== 'production') {
+  app.use('/uploads/videos', express.static(path.join(uploadsDir, 'videos'), {
+    acceptRanges: true,
+    setHeaders: (res, filePath) => {
+      if (path.extname(filePath).toLowerCase() === '.mp4') {
+        res.setHeader('Content-Type', 'video/mp4');
+      }
+    },
+  }));
+}
 
 if (!fs.existsSync(uploadsDir)) {
   logger.info('⚠️ Uploads directory not found, creating:', uploadsDir);
@@ -124,8 +138,8 @@ app.use('/api/student', studentRoutes);
 app.use('/api/store', storeRoutes);
 app.use('/api/store', paymentRoutes);
 app.use('/api/lessons', lessonRoutes);
+app.use('/api/media', mediaRoutes);
 app.use('/api/upload', uploadRoutes);
-app.use('/api/lessons/upload', uploadRoutes);
 app.use('/api/trackings', trackingRoutes);
 app.use('/api/courses', courseRoutes);
 app.use('/api/teachers', teacherRoutes);
@@ -140,11 +154,16 @@ app.use('/public', express.static(path.join(process.cwd(), 'public')));
 // Web routes: landing, privacy, terms — must be before /api catch-all
 app.use('/', webRoutes);
 
-// Quiz routes (for pending essays)
-app.use('/api/quiz', trackingRoutes);
+// Quiz routes — only the pending-essays endpoint the client actually uses.
+// Previously `app.use('/api/quiz', trackingRoutes)`, which re-published the
+// whole tracking router under a second prefix.
+app.use('/api/quiz', quizRoutes);
 
-// Health check
+// Health check — يدعم المسارين للتوافق
 app.get('/health', (req, res) => {
+  res.json({ status: 'ok', environment: NODE_ENV });
+});
+app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', environment: NODE_ENV });
 });
 
@@ -155,8 +174,52 @@ app.use((req, res) => {
 
 // Error handler. Every failure gets a request id so a user-reported error can be
 // correlated to the matching server log line without leaking internals in the response.
-app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
+//
+// A malformed or oversized request body is a CLIENT error, not a server failure:
+// express.json() / express.urlencoded() already produce 400 / 413 errors, and the
+// handler below was flattening them to 500. That mislabelled every bad client
+// request as an outage, buried the real 5xx signals in monitoring noise, and told
+// legitimate users the server broke when their payload was wrong.
+const CLIENT_ERROR_MESSAGES: Record<string, { status: number; message: string }> = {
+  'entity.parse.failed': { status: 400, message: 'Malformed JSON body' },
+  'entity.verify.failed': { status: 403, message: 'Failed to verify request body' },
+  'entity.too.large': { status: 413, message: 'Request body too large' },
+  'encoding.unsupported': { status: 415, message: 'Unsupported content encoding' },
+  'charset.unsupported': { status: 415, message: 'Unsupported charset' },
+  'parameters.too.many': { status: 400, message: 'Too many parameters' },
+  'request.aborted': { status: 400, message: 'Request aborted' },
+  'request.size.invalid': { status: 400, message: 'Invalid request size' },
+};
+
+app.use((err: Error & { type?: string; status?: number; statusCode?: number }, req: express.Request, res: express.Response, next: express.NextFunction) => {
   const requestId = crypto.randomUUID();
+  const typed = err as Error & { type?: string; status?: number; statusCode?: number };
+  const known = typed.type ? CLIENT_ERROR_MESSAGES[typed.type] : undefined;
+
+  if (known) {
+    // Log at warn, not error: this is the caller's mistake, not ours.
+    logger.warn(`[${requestId}] ${req.method} ${req.originalUrl}: ${typed.type}`);
+    res.status(known.status).json({ error: known.message, requestId });
+    return;
+  }
+
+  // Any other error that already carries a 4xx status is a client error too
+  // (e.g. a Zod validation failure surfacing through an async handler). Respect
+  // the status but never echo the original message, which can carry field values.
+  const declaredStatus = typed.status ?? typed.statusCode;
+  if (typeof declaredStatus === 'number' && declaredStatus >= 400 && declaredStatus < 500) {
+    logger.warn(`[${requestId}] ${req.method} ${req.originalUrl}: ${typed.name}`);
+    res.status(declaredStatus).json({ error: 'Invalid request', requestId });
+    return;
+  }
+
+  // Headers already flushed: delegate to Express's default handler so the
+  // response is closed correctly instead of throwing ERR_HTTP_HEADERS_SENT.
+  if (res.headersSent) {
+    next(err);
+    return;
+  }
+
   logger.error(`[${requestId}] ${req.method} ${req.originalUrl}:`, err);
   res.status(500).json({ error: 'Internal server error', requestId });
 });

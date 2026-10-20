@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import { PrismaClient } from '@prisma/client';
 import app from '../app';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 const phone = '01080808080';
 const otherPhone = '01080808081';
 
@@ -196,7 +196,10 @@ describe('support tickets', () => {
   });
 
   it('lists only the caller tickets newest first', async () => {
-    await prisma.supportTicket.deleteMany({});
+    // Scoped to this suite's own user. `deleteMany({})` would also erase
+    // tickets belonging to other suites running in the same database.
+    const me = await prisma.user.findUnique({ where: { phone }, select: { id: true } });
+    await prisma.supportTicket.deleteMany({ where: { userId: me!.id } });
 
     const first = await request(app)
       .post('/api/auth/support/tickets')

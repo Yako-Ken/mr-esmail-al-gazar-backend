@@ -16,7 +16,8 @@ const PDFS_DIR = path.join(UPLOAD_DIR, 'pdfs');
   }
 });
 
-// 2. Storage Engine (Categorized)
+// 2. Disk storage engine (categorized). Files are persisted under uploads and
+// callers should delete/replace old files after the database update succeeds.
 const storage = multer.diskStorage({
   destination: (_req: Request, file: Express.Multer.File, cb: (error: Error | null, destination: string) => void) => {
     switch (file.fieldname) {

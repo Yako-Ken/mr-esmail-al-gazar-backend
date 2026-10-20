@@ -1,11 +1,12 @@
 import { Router, Request, Response, RequestHandler } from 'express';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthUser } from '../middlewares/auth.middleware';
+import { roleMiddleware } from '../middlewares/role.middleware';
 import { logger } from '../utils/logger';
 import { env } from '../utils/env';
 import { createAttendanceQrToken, verifyAttendanceQrToken } from '../utils/attendanceQr';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 
 const getOwnerId = (authUser: AuthUser): string => {
   return authUser.role === 'ASSISTANT' && authUser.parentTeacherId 
@@ -249,10 +250,92 @@ export const getSessionDetails: RequestHandler = async (req, res): Promise<void>
 
 const router = Router();
 
-router.post('/sessions', authMiddleware, createSession);
-router.get('/sessions', authMiddleware, getSessions);
-router.get('/sessions/:sessionId', authMiddleware, getSessionDetails);
+// The teacher's register for one session.
+//
+// Rows come exclusively from AttendanceRecord, the record the QR flow writes. A
+// student who is enrolled but has not been scanned is never materialised as a
+// "present" row — that fabrication is what made a register with no records at
+// all display every student as present. Unscanned students are reported as a
+// count so the teacher still sees the denominator they are marking against.
+export const getSessionRegister: RequestHandler = async (req, res): Promise<void> => {
+  try {
+    const authUser = (req as Request & { user?: AuthUser }).user;
+    if (!authUser) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const ownerId = getOwnerId(authUser);
+    const { sessionId } = req.params;
+
+    const session = await prisma.attendanceSession.findUnique({
+      where: { id: sessionId },
+    });
+
+    if (!session || session.ownerId !== ownerId) {
+      res.status(404).json({ error: 'Session not found or unauthorized' });
+      return;
+    }
+
+    const records = await prisma.attendanceRecord.findMany({
+      where: { sessionId },
+      include: { student: { select: { id: true, name: true, phone: true } } },
+      orderBy: { timestamp: 'asc' },
+    });
+
+    const enrolled = await prisma.courseEnrollment.count({
+      where: {
+        course: {
+          teacherId: ownerId,
+          subject: session.subject ?? undefined,
+          grade: session.grade ?? undefined,
+        },
+        status: 'APPROVED',
+      },
+    });
+
+    res.json({
+      session: {
+        id: session.id,
+        subject: session.subject,
+        grade: session.grade,
+        date: session.date,
+      },
+      enrolledCount: enrolled,
+      presentCount: records.length,
+      students: records.map((r) => ({
+        id: r.student.id,
+        name: r.student.name,
+        phone: r.student.phone,
+        present: true,
+        timestamp: r.timestamp,
+      })),
+    });
+  } catch (error) {
+    logger.error('getSessionRegister error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+// Staff-only surface. These endpoints touch teacher-owned academic records, so
+// the role gate lives in the middleware chain rather than relying on each
+// handler to remember its own check — a STUDENT previously received 201 from
+// POST /sessions and could create their own attendance records.
+//
+// `/qr-token` is the deliberate exception and stays student-facing: it issues
+// the caller's own signed one-time token, and the handler enforces STUDENT-only.
+const STAFF = ['TEACHER', 'ASSISTANT', 'SUPER_ADMIN'] as const;
+
+router.post('/sessions', authMiddleware, roleMiddleware(...STAFF), createSession);
+router.get('/sessions', authMiddleware, roleMiddleware(...STAFF), getSessions);
+router.get('/sessions/:sessionId', authMiddleware, roleMiddleware(...STAFF), getSessionDetails);
+router.get(
+  '/sessions/:sessionId/register',
+  authMiddleware,
+  roleMiddleware(...STAFF),
+  getSessionRegister,
+);
 router.get('/qr-token', authMiddleware, createStudentQrToken);
-router.post('/mark', authMiddleware, markAttendance);
+router.post('/mark', authMiddleware, roleMiddleware(...STAFF), markAttendance);
 
 export default router;

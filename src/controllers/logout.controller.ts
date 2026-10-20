@@ -3,7 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { logger } from '../utils/logger';
 
 const router = Router();
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 
 // Simple in-memory token blacklist (for production, use Redis or database)
 const tokenBlacklist: Set<string> = new Set();

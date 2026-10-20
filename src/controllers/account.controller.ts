@@ -7,7 +7,7 @@ import {
   UpdatePreferencesInput,
 } from '../schemas/account.schema';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 
 type AuthenticatedRequest = Request & { user?: AuthUser };
 

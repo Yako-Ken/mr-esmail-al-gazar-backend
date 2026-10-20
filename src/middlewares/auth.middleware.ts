@@ -5,7 +5,8 @@ import { isBlacklisted } from '../controllers/logout.controller';
 import { logger } from '../utils/logger';
 import { env } from '../utils/env';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
+const INACTIVE_STATUSES = new Set(['deleted', 'deletion_processing', 'rejected', 'suspended', 'banned', 'blocked']);
 
 export interface AuthUser {
   id: string;
@@ -109,7 +110,7 @@ export const authMiddleware: RequestHandler = async (
       return;
     }
 
-    if (user.status === 'deleted' || user.status === 'deletion_processing') {
+    if (INACTIVE_STATUSES.has(user.status.toLowerCase())) {
       res.status(401).json({ error: 'Account is no longer active.' });
       return;
     }
@@ -219,8 +220,8 @@ export const optionalAuthMiddleware: RequestHandler = async (
       },
     });
 
-    if (user && user.isApproved && user.status !== 'deleted' &&
-        user.status !== 'deletion_processing' && Number.isInteger(decoded.sv) &&
+    if (user && user.isApproved && !INACTIVE_STATUSES.has(user.status.toLowerCase()) &&
+        Number.isInteger(decoded.sv) &&
         decoded.sv === user.sessionVersion) {
       let sessionId: string | null = null;
       if (decoded.sid !== undefined) {
@@ -262,7 +263,16 @@ export const optionalAuthMiddleware: RequestHandler = async (
 
 // Middleware specifically built for Teacher Approval Workflow
 export const isApprovedUser: RequestHandler = (req, res, next) => {
-  if (req.user && (!req.user.isApproved || req.user.status?.toLowerCase() !== 'approved')) {
+  const user = req.user;
+  if (!user) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  if (user.role === 'SUPER_ADMIN' && user.isApproved) {
+    next();
+    return;
+  }
+  if (!user.isApproved || user.status?.toLowerCase() !== 'approved') {
     res.status(403).json({ error: 'Account pending approval' });
     return;
   }

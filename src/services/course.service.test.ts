@@ -3,7 +3,7 @@ import * as courseService from './course.service';
 import { NotFoundError, ForbiddenError, BadRequestError } from '../utils/appError';
 import { AuthUser } from '../middlewares/auth.middleware';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 
 const makeAuthUser = (overrides: Partial<AuthUser> = {}): AuthUser => ({
   id: 'teacher-1',
@@ -116,12 +116,10 @@ describe('course.service', () => {
       await expect(courseService.getCourseWithLessons('does-not-exist')).rejects.toBeInstanceOf(NotFoundError);
     });
 
-    it('returns the course with an empty lessons array when none exist', async () => {
+    it('does not expose an unpublished course', async () => {
       const authUser = makeAuthUser({ id: teacherId });
-      const created = await courseService.createCourse(authUser, { title: 'Empty Lessons Course' }, undefined);
-      const fetched = await courseService.getCourseWithLessons(created.id);
-      expect(fetched.id).toBe(created.id);
-      expect(fetched.lessons).toEqual([]);
+      const created = await courseService.createCourse(authUser, { title: 'Unpublished Course' }, undefined);
+      await expect(courseService.getCourseWithLessons(created.id)).rejects.toBeInstanceOf(NotFoundError);
     });
   });
 });

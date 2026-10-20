@@ -2,6 +2,7 @@
 // GET / → Branded landing for Esmail ElGazar platform
 import { Router, Request, Response } from 'express';
 import path from 'path';
+import { APP_DOMAIN, SUPPORT_EMAIL } from '../utils/env';
 
 const router = Router();
 
@@ -14,7 +15,7 @@ router.use('/assets', (req: Request, res: Response, next) => {
 
 // Main landing page
 router.get('/', (req: Request, res: Response) => {
-  const host = `${req.protocol}://${req.get('host')}`;
+  const host = `${req.protocol}://${req.get('host') || APP_DOMAIN}`;
   res.send(`
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
@@ -67,7 +68,7 @@ router.get('/', (req: Request, res: Response) => {
       <p>
         <a href="${host}/privacy-policy.html">سياسة الخصوصية</a> ·
         <a href="${host}/terms.html">شروط الاستخدام</a> ·
-        <a href="mailto:support@elgazar.edu">الدعم الفني</a>
+        <a href="mailto:${SUPPORT_EMAIL}">الدعم الفني</a>
       </p>
       <p style="margin-top:.5rem;">© 2026 Esmail ElGazar. جميع الحقوق محفوظة.</p>
     </footer>
@@ -76,46 +77,17 @@ router.get('/', (req: Request, res: Response) => {
 </html>`);
 });
 
-// Privacy Policy page (required for store listing)
-router.get('/privacy-policy.html', (req: Request, res: Response) => {
-  res.send(`
-<!DOCTYPE html>
-<html lang="ar" dir="rtl">
-<head>
-  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>سياسة الخصوصية — Esmail ElGazar</title>
-  <style>
-    body{font-family:'Segoe UI',sans-serif;max-width:800px;margin:0 auto;padding:2rem;line-height:1.8;background:#f8f9fa;color:#1a1a2e}
-    h1{color:#B8860B;font-size:1.6rem;margin-bottom:1rem}
-    h2{color:#0A0F1A;font-size:1.1rem;margin-top:2rem;margin-bottom:.5rem}
-    p{margin-bottom:.6rem}
-  </style>
-</head>
-<body>
-  <h1>سياسة الخصوصية لمنصة Esmail ElGazarالتعليمية</h1>
-  <p><strong>آخر تحديث:</strong> 11 أغسطس 2026</p>
-  
-  <h2>1. البيانات التي نجمعها</h2>
-  <p>نجمع: الاسم، رقم الهاتف، البريد الإلكتروني، معلومات الدفع (لا تُخزن محلياً)، سجل الحضور، درجات الاختبارات.</p>
-  
-  <h2>2. كيفية استخدام البيانات</h2>
-  <p>نستخدم بياناتك فقط لتقديم الخدمة: تتبع التقدم الدراسي، إرسال تقارير لأولياء الأمور، معالجة الاشتراكات.</p>
-  
-  <h2>3. مشاركة البيانات</h2>
-  <p>لا نبيع بياناتك. قد نعالج الحد الأدنى اللازم عبر Paymob للدفع، Railway للاستضافة، Bunny للفيديو، Sentry للأعطال، وخدمات الإشعارات والبريد عند تفعيلها.</p>
-  
-  <h2>4. حقوقك</h2>
-  <p>يمكنك طلب حذف حسابك وبياناتك في أي وقت بمراسلة: privacy@elgazar.edu — سنحذفها خلال 30 يوم.</p>
-  
-  <h2>5. الأمان</h2>
-  <p>نستخدم JWT موقّعًا للتحقق من الجلسات، وHTTPS للطلبات، ولا نخزّن كلمات المرور أو أكواد الاستعادة كنص صريح.</p>
-  
-  <p style="margin-top:2rem;font-size:.85rem;color:#666">
-    للاستفسارات: support@elgazar.edu — Cairo, Egypt
-  </p>
-</body>
-</html>`);
-});
+  // Privacy Policy (required for store listing).
+  //
+  // Served from the file, not from a copy embedded in this route. There were two
+  // sources of truth: this route served an inline document with five sections
+  // while public/privacy-policy.html held nine. Editing one shipped a different
+  // policy than editing the other, and the inline copy won in production because
+  // this route never read the file at all. The file is also the one linked from the
+  // landing footer, so it is the maintained copy.
+  router.get('/privacy-policy.html', (req: Request, res: Response) => {
+    res.sendFile(path.join(process.cwd(), 'public', 'privacy-policy.html'));
+  });
 
 // Terms of Service page (linked from the landing footer)
 router.get('/terms.html', (req: Request, res: Response) => {

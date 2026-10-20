@@ -12,7 +12,7 @@ import {
   verifyCurrentPassword,
 } from '../services/privacy.service';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 
 const authUserId = (req: Request): string | null => req.user?.id ?? null;
 

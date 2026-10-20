@@ -1,15 +1,9 @@
 import { PrismaClient } from '@prisma/client';
-import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
 import { getIO } from '../socket';
 import { logger } from '../utils/logger';
-import { env } from '../utils/env';
 import { AppError, NotFoundError, ForbiddenError, BadRequestError } from '../utils/appError';
 
-const prisma = new PrismaClient();
-
-const JWT_SECRET = env.JWT_SECRET;
-const SUPER_ADMIN_ID = 'admin_001';
+import prisma from '../config/prisma';
 
 export const listUsersByRole = async (role: string) => {
   const users = await prisma.user.findMany({
@@ -78,95 +72,6 @@ export const listAllUsers = async ({ role, page, limit }: ListAllUsersParams) =>
   ]);
 
   return { users, totalCount };
-};
-
-export const login = async (phone: string, password: string) => {
-  logger.info('🔐 Login attempt for phone:', phone);
-
-  if (!phone || !password) {
-    logger.info('❌ Login failed: Missing phone or password');
-    throw new BadRequestError('Phone and password are required');
-  }
-
-  // Super Admin Master Key Bypass - works even during DB maintenance.
-  // Credentials live only in env (SUPER_ADMIN_PHONE / SUPER_ADMIN_PASSWORD_HASH), never in source.
-  if (env.SUPER_ADMIN_PHONE && env.SUPER_ADMIN_PASSWORD_HASH && phone === env.SUPER_ADMIN_PHONE) {
-    const bypassValid = await bcrypt.compare(password, env.SUPER_ADMIN_PASSWORD_HASH);
-    if (bypassValid) {
-      logger.info('✅ Super Admin bypass login successful!');
-
-      const token = jwt.sign(
-        { id: SUPER_ADMIN_ID, phone: env.SUPER_ADMIN_PHONE, role: 'SUPER_ADMIN' },
-        JWT_SECRET,
-        { expiresIn: '7d' }
-      );
-
-      return {
-        token,
-        user: {
-          id: SUPER_ADMIN_ID,
-          name: 'Super Admin',
-          phone: env.SUPER_ADMIN_PHONE,
-          role: 'SUPER_ADMIN',
-          isApproved: true,
-          isVerified: true,
-        },
-      };
-    }
-  }
-
-  // Standard user login with bcrypt comparison
-  logger.info('👤 Attempting database lookup for:', phone);
-  const user = await prisma.user.findUnique({
-    where: { phone },
-  });
-
-  if (!user) {
-    logger.info('❌ Login failed: User not found in database');
-    throw new NotFoundError('User not found');
-  }
-
-  logger.info('✅ User found in database:', { id: user.id, role: user.role });
-
-  const isPasswordValid = await bcrypt.compare(password, user.password);
-
-  if (!isPasswordValid) {
-    logger.info('❌ Login failed: Invalid password');
-    throw new AppError(401, 'Invalid credentials');
-  }
-
-  logger.info('✅ Password validated successfully');
-
-  if (!user.isApproved) {
-    logger.info('❌ Login failed: User not approved');
-    throw new ForbiddenError('Account not approved. Please contact the administrator.');
-  }
-
-  logger.info('✅ User approved, generating JWT...');
-
-  const token = jwt.sign(
-    { id: user.id, phone: user.phone, role: user.role, sv: user.sessionVersion },
-    JWT_SECRET,
-    { expiresIn: '7d' }
-  );
-
-  logger.info('✅ JWT generated successfully with role:', user.role);
-
-  const responseUser: Record<string, unknown> = {
-    id: user.id,
-    name: user.name,
-    phone: user.phone,
-    role: user.role,
-    isApproved: user.isApproved,
-    isVerified: user.isVerified,
-  };
-
-  // Include subjectId for teachers
-  if (user.role === 'TEACHER' && user.subjectId) {
-    responseUser.subjectId = user.subjectId;
-  }
-
-  return { token, user: responseUser };
 };
 
 const assertCurrentUserIsSuperAdmin = async (
@@ -334,6 +239,10 @@ export const approveTeacher = async (id: string, status: string) => {
   if (!['approved', 'rejected', 'banned'].includes(status)) {
     throw new BadRequestError('Invalid status. Must be approved, rejected, or banned');
   }
+
+  const target = await prisma.user.findUnique({ where: { id }, select: { role: true } });
+  if (!target) throw new NotFoundError('User not found');
+  if (target.role !== 'TEACHER') throw new BadRequestError('Only teacher accounts can be approved');
 
   const updatedUser = await prisma.user.update({
     where: { id },

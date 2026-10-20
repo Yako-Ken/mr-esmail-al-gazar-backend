@@ -40,6 +40,15 @@ describe('app', () => {
     expect(res.status).toBe(401);
   });
 
+  it('rejects an unauthenticated single-course request with 401', async () => {
+    // The course payload embeds the teacher's payout identifiers
+    // (vodafoneCashNumber / instapayHandle), so this route must never be
+    // reachable without a session. The public catalogue is /api/store/courses.
+    const res = await request(app).get('/api/courses/demo_course_001');
+    expect(res.status).toBe(401);
+    expect(res.body).not.toHaveProperty('teacher');
+  });
+
   it('never exposes permanent media URLs from the public lesson catalog', async () => {
     const res = await request(app).get('/api/lessons/public');
     expect(res.status).toBe(200);

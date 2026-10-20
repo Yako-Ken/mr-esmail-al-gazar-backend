@@ -4,7 +4,7 @@ import { resolveOwnerId } from '../utils/ownerId';
 import { NotFoundError, ForbiddenError, BadRequestError } from '../utils/appError';
 import { logger } from '../utils/logger';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 
 export interface CourseInput {
   title?: string;
@@ -76,8 +76,8 @@ export const createCourse = async (
 };
 
 export const getCourseWithLessons = async (id: string) => {
-  const course = await prisma.course.findUnique({
-    where: { id },
+  const course = await prisma.course.findFirst({
+    where: { id, isPublished: true },
     include: {
       lessons: {
         include: { quizzes: true },

@@ -2,9 +2,10 @@
 // Handles: save to DB → emit via Socket.IO → optionally push via FCM when ready
 import { PrismaClient } from '@prisma/client';
 import { getIO } from '../socket';
+import { FcmService } from './fcm.service';
 import { logger } from '../utils/logger';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 
 export type NotificationType =
   | 'lesson_new'          // new lesson/course published
@@ -62,6 +63,28 @@ export class NotificationService {
       }
 
       logger.info(`[notify] ${type} sent to ${userId}: ${title}`);
+
+      // 3. Remote push via FCM HTTP v1.
+      //
+      // Deliberately NOT awaited. The DB row and the Socket.IO emit above are
+      // already committed and are the source of truth; remote push is a
+      // best-effort extra for when the app is backgrounded or killed. Awaiting
+      // it would add two round trips to the critical path of things like
+      // posting a grade, and a Google outage would turn a successful write into
+      // a failed request.
+      //
+      // `pushToUser` already swallows every error internally; the `.catch` is
+      // belt-and-braces so a future change there can never surface as an
+      // unhandled rejection that takes the process down.
+      void FcmService.pushToUser(userId, {
+        notificationId: notification.id,
+        type,
+        title,
+        body,
+        data,
+      }).catch(() => {
+        /* push must never affect the notification write */
+      });
     } catch (err) {
       logger.error(`[notify] Failed to send ${type} to ${userId}:`, err);
       // Silently fail — notifications must never break the main flow

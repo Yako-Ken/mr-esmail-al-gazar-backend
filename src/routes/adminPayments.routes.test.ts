@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import { PrismaClient } from '@prisma/client';
 import app from '../app';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 
 const adminPhone = '01070707070';
 const studentPhone = '01060606061';
@@ -112,15 +112,38 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await prisma.adminAuditEvent.deleteMany({});
-  await prisma.refund.deleteMany({});
-  await prisma.paymentAttempt.deleteMany({});
-  await prisma.paymentEvent.deleteMany({});
-  await prisma.paymentOrder.deleteMany({});
-  await prisma.course.deleteMany({});
-  await prisma.user.deleteMany({
-    where: { phone: { in: [adminPhone, studentPhone, '01050505052'] } },
+  // Scoped to this suite's own users, courses and orders. `deleteMany({})`
+  // used to erase every audit event, refund, order and course in the database,
+  // destroying the fixtures of whichever suite ran next in --runInBand.
+  const myPhones = [adminPhone, studentPhone, '01050505052'];
+  const myUsers = await prisma.user.findMany({
+    where: { phone: { in: myPhones } },
+    select: { id: true },
   });
+  const myUserIds = myUsers.map((u) => u.id);
+
+  const myCourses = await prisma.course.findMany({
+    where: { teacherId: { in: myUserIds } },
+    select: { id: true },
+  });
+  const myCourseIds = myCourses.map((c) => c.id);
+
+  const myOrders = await prisma.paymentOrder.findMany({
+    where: { studentId: { in: myUserIds }, courseId: { in: myCourseIds } },
+    select: { id: true },
+  });
+  const myOrderIds = myOrders.map((o) => o.id);
+
+  // Commerce tables carry plain columns rather than Prisma relations (they have
+  // no foreign keys), so cleanup scopes by collected ids.
+  await prisma.adminAuditEvent.deleteMany({ where: { actorId: { in: myUserIds } } });
+  await prisma.refund.deleteMany({ where: { paymentOrderId: { in: myOrderIds } } });
+  await prisma.paymentAttempt.deleteMany({ where: { paymentOrderId: { in: myOrderIds } } });
+  await prisma.paymentEvent.deleteMany({ where: { paymentOrderId: { in: myOrderIds } } });
+  await prisma.paymentOrder.deleteMany({ where: { id: { in: myOrderIds } } });
+  await prisma.lesson.deleteMany({ where: { courseId: { in: myCourseIds } } });
+  await prisma.course.deleteMany({ where: { id: { in: myCourseIds } } });
+  await prisma.user.deleteMany({ where: { id: { in: myUserIds } } });
   await prisma.$disconnect();
 });
 
@@ -156,10 +179,28 @@ describe('admin payments listing and detail', () => {
     const response = await request(app)
       .get('/api/admin/payments')
       .set(bearer(adminToken));
-    expect(response.status).toBe(200);
-    expect(response.body.total).toBe(3);
-    expect(response.body.orders[0].createdAt >= response.body.orders[1].createdAt).toBe(true);
-    expect(response.body.summary).toMatchObject({ PAID: 1, PENDING: 1, FAILED: 1 });
+      expect(response.status).toBe(200);
+      // Scope to this suite's orders. /api/admin/payments is admin-global, so a
+      // fixed `total` only holds while this suite is the only writer in the
+      // database. What matters is that our three orders are all present, in
+      // newest-first order, and that the summary buckets agree with the rows.
+      const ours = response.body.orders.filter((o: { id: string }) =>
+        [paidOrderId, pendingOrderId, failedOrderId].includes(o.id),
+      );
+      expect(ours).toHaveLength(3);
+      expect(response.body.total).toBeGreaterThanOrEqual(3);
+      expect(response.body.orders[0].createdAt >= response.body.orders[1].createdAt).toBe(true);
+
+      // The summary must describe exactly the rows returned.
+      const summaryTotal = Object.values(response.body.summary ?? {}).reduce(
+        (sum: number, n: unknown) => sum + (Number(n) || 0),
+        0,
+      );
+      expect(summaryTotal).toBe(response.body.total);
+      // Our three fixtures contribute one of each state.
+      expect(response.body.summary.PAID).toBeGreaterThanOrEqual(1);
+      expect(response.body.summary.PENDING).toBeGreaterThanOrEqual(1);
+      expect(response.body.summary.FAILED).toBeGreaterThanOrEqual(1);
 
     const serialized = JSON.stringify(response.body);
     expect(serialized).not.toContain(studentPhone); // raw phone never leaves the server
@@ -181,9 +222,12 @@ describe('admin payments listing and detail', () => {
       .get('/api/admin/payments')
       .query({ status: 'PAID' })
       .set(bearer(adminToken));
-    expect(response.status).toBe(200);
-    expect(response.body.total).toBe(1);
-    expect(response.body.orders[0].id).toBe(paidOrderId);
+      expect(response.status).toBe(200);
+      // Filtering by PAID must return every PAID row and nothing else. Assert
+      // the invariant (all returned rows are PAID, ours is among them) rather
+      // than a global count, which depends on what else is in the database.
+      expect(response.body.orders.every((o: { status: string }) => o.status === 'PAID')).toBe(true);
+      expect(response.body.orders.map((o: { id: string }) => o.id)).toContain(paidOrderId);
   });
 
   it('returns 400 for invalid query params', async () => {

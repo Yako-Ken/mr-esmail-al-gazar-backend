@@ -1,0 +1,26 @@
+{
+  "//": [
+    "Dead-code audit config. Extends the base tsconfig and turns ON the two",
+    "unused-symbol checks that tsconfig.json deliberately leaves off.",
+    "",
+    "Why this is a separate file rather than a flag in tsconfig.json:",
+    "with the flags on, `npm run build` fails on 28 findings today. D-06 in",
+    "docs/SYSTEM_DESIGN.md is explicit that pass 1 must NOT block work -",
+    "only make the inventory visible - and pass 2 deletes.",
+    "",
+    "Usage:  npm run audit:unused        (lists the findings)",
+    "Delete a finding, re-run, watch the count fall. When it reaches 0,",
+    "move noUnusedLocals/noUnusedParameters into tsconfig.json for real.",
+    "",
+    "The include list deliberately excludes **/*.test.ts: fixtures and",
+    "local helpers in tests are not production dead code."
+  ],
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noEmit": true
+  },
+  "include": ["src/**/*", "prisma/**/*.ts"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts"]
+}

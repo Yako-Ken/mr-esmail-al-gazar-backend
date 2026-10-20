@@ -3,7 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { AuthUser } from './auth.middleware';
 import { logger } from '../utils/logger';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 
 // ─── Generic role gate ────────────────────────────────────────────────────────
 export const roleMiddleware = (...allowedRoles: string[]): RequestHandler => {
@@ -112,9 +112,10 @@ export const checkTeacherApproval: RequestHandler = async (
     );
 
     if (normalizedStatus !== 'APPROVED' || !dbUser.isApproved) {
+      // No `debug` payload: the client's only actionable signal is the message
+      // and the 403. Account status is server-side detail (rule EH-5).
       res.status(403).json({
         error: 'Your account is not approved. Please contact Super Admin.',
-        debug: { status: dbUser.status, isApproved: dbUser.isApproved },
       });
       return;
     }

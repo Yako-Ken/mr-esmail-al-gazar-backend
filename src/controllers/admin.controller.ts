@@ -1,6 +1,8 @@
 import { Request, RequestHandler } from 'express';
 import { AuthUser } from '../middlewares/auth.middleware';
 import { handleControllerError } from '../middlewares/errorHandler';
+import { logger } from '../utils/logger';
+import { redactUser } from '../utils/redact';
 import * as adminService from '../services/admin.service';
 
 /**
@@ -55,16 +57,6 @@ export const getAllUsers: RequestHandler = async (req, res): Promise<void> => {
     });
   } catch (error) {
     handleControllerError('getAllUsers', error, res);
-  }
-};
-
-export const login: RequestHandler = async (req, res): Promise<void> => {
-  try {
-    const { phone, password } = req.body;
-    const result = await adminService.login(phone, password);
-    res.json(result);
-  } catch (error) {
-    handleControllerError('login', error, res);
   }
 };
 
@@ -187,11 +179,87 @@ export const approveTeacher: RequestHandler = async (req, res): Promise<void> =>
   }
 };
 
+/**
+ * Fields a moderator is entitled to see on a profile.
+ *
+ * `admin.service.getStudentById` / `getTeacherById` load the `User` row with
+ * `include` and no `select`, so their return value is the whole row. Handing
+ * that straight to `res.json` published the bcrypt `password` hash, the
+ * `deviceId` and `sessionVersion` used for device limits and token revocation,
+ * the unverified `parentPhone` contact hint, and the `vodafoneCashNumber` /
+ * `instapayHandle` payment identifiers — none of which account moderation needs,
+ * and all of which turn a read-only profile view into a credential and payment
+ * disclosure.
+ *
+ * So both handlers project an allow-list instead of spreading. Guardian
+ * *linkage* survives (the moderator still needs to tell a linked account from an
+ * unlinked one) while the guardian's own phone number does not: that is a third
+ * party's contact detail, pulled in only because the relation is included.
+ */
+const projectProfileScalars = <
+  T extends {
+    id: string;
+    name: string;
+    phone: string;
+    email: string | null;
+    role: string;
+    status: string;
+    isApproved: boolean;
+    isVerified: boolean;
+    createdAt: Date;
+    updatedAt: Date;
+  },
+>(
+  user: T,
+) => ({
+  id: user.id,
+  name: user.name,
+  phone: user.phone,
+  email: user.email,
+  role: user.role,
+  status: user.status,
+  isApproved: user.isApproved,
+  isVerified: user.isVerified,
+  createdAt: user.createdAt,
+  updatedAt: user.updatedAt,
+});
+
 export const getStudentById: RequestHandler = async (req, res): Promise<void> => {
   try {
     const { id } = req.params;
     const student = await adminService.getStudentById(id);
-    res.json({ data: student });
+
+    const data = {
+      ...projectProfileScalars(student),
+      studentRelations: student.studentRelations.map((relation) => ({
+        id: relation.id,
+        studentId: relation.studentId,
+        parentId: relation.parentId,
+        // Identity of the guardian, not their contact details.
+        parent: { id: relation.parentId, name: relation.parent.name },
+      })),
+      courseEnrollments: student.courseEnrollments.map((enrollment) => ({
+        id: enrollment.id,
+        studentId: enrollment.studentId,
+        courseId: enrollment.courseId,
+        status: enrollment.status,
+        createdAt: enrollment.createdAt,
+        course: enrollment.course
+          ? {
+              id: enrollment.course.id,
+              title: enrollment.course.title,
+              subject: enrollment.course.subject,
+              grade: enrollment.course.grade,
+              isPublished: enrollment.course.isPublished,
+              teacher: { id: enrollment.course.teacherId, name: enrollment.course.teacher.name },
+            }
+          : null,
+      })),
+    };
+
+    logger.info('[GET /admin/users/students/:id] profile projected', redactUser(student));
+
+    res.json({ data });
   } catch (error) {
     handleControllerError('getStudentById', error, res);
   }
@@ -201,7 +269,18 @@ export const getTeacherById: RequestHandler = async (req, res): Promise<void> =>
   try {
     const { id } = req.params;
     const teacher = await adminService.getTeacherById(id);
-    res.json({ data: teacher });
+
+    const data = {
+      ...projectProfileScalars(teacher),
+      // The service already narrows these two relations; they carry no personal
+      // data, so they are passed through as returned.
+      lessons: teacher.lessons,
+      courses: teacher.courses,
+    };
+
+    logger.info('[GET /admin/users/teachers/:id] profile projected', redactUser(teacher));
+
+    res.json({ data });
   } catch (error) {
     handleControllerError('getTeacherById', error, res);
   }

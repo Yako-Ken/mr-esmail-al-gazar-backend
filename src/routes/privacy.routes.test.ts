@@ -7,8 +7,8 @@ import {
   executeDueAccountDeletions,
 } from '../services/privacy.service';
 
-const prisma = new PrismaClient();
-const phone = '01080808080';
+import prisma from '../config/prisma';
+const phone = '01080808085';
 const password = 'Privacy@2026';
 let testUserId: string;
 

@@ -9,7 +9,8 @@ import { env } from '../utils/env';
 import { generateOtp, hashOtp, hashResetToken, secureDigestEqual } from '../utils/otp';
 import { createUserSession } from '../services/session.service';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
+const INACTIVE_STATUSES = new Set(['deleted', 'deletion_processing', 'rejected', 'suspended', 'banned', 'blocked']);
 
 export const login = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -57,8 +58,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       where: { id: user.id },
       select: { status: true },
     });
-    if (!activeAccount || activeAccount.status === 'deleted' ||
-        activeAccount.status === 'deletion_processing') {
+    if (!activeAccount || INACTIVE_STATUSES.has(activeAccount.status.toLowerCase())) {
       res.status(401).json({ error: 'Invalid credentials' });
       return;
     }

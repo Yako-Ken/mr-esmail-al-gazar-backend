@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   markAttendance,
   submitQuiz,
+  submitHomework,
   fetchStudents,
   getLessons,
   getLessonById,
@@ -12,11 +13,14 @@ import {
 } from '../controllers/lesson.controller';
 import { authMiddleware } from '../middlewares/auth.middleware';
 import { roleMiddleware, canManageContent } from '../middlewares/role.middleware';
+import { validateBody } from '../middlewares/validate.middleware';
+import { homeworkSubmissionSchema } from '../schemas/lesson.schema';
 
 const router = Router();
 
 router.post('/mark-attendance', authMiddleware, markAttendance);
 router.post('/submit-quiz', authMiddleware, submitQuiz);
+router.post('/:id/homework', authMiddleware, validateBody(homeworkSubmissionSchema), submitHomework);
 router.get(
   '/fetch-students',
   authMiddleware,

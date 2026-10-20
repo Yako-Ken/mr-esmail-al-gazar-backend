@@ -1,7 +1,7 @@
 import { Prisma, PrismaClient } from '@prisma/client';
 import { logger } from '../utils/logger';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 
 export interface AdminCourseRow {
   id: string;
@@ -27,38 +27,76 @@ export const listAdminCourses = async ({
   page = 1,
   limit = 20,
 }: ListAdminCoursesParams) => {
-  const where =
+  // Typed explicitly so the same object can be passed to both `count` and
+  // `groupBy`, whose `where` overloads are narrower than findMany's.
+  const where: Prisma.CourseWhereInput =
     status === 'PUBLISHED'
       ? { isPublished: true }
       : status === 'DRAFT'
         ? { isPublished: false }
         : {};
 
-  const [courses, total, statusCounts] = await Promise.all([
-    prisma.course.findMany({
-      where,
-      orderBy: { updatedAt: 'desc' },
-      skip: (page - 1) * limit,
-      take: limit,
-      select: {
-        id: true,
-        title: true,
-        isPublished: true,
-        publishedAt: true,
-        priceMinor: true,
-        currency: true,
-        createdAt: true,
-        _count: { select: { lessons: true, courseEnrollments: true } },
-        teacher: { select: { name: true } },
-      },
-    }),
-    prisma.course.count({ where }),
-    prisma.course.groupBy({ by: ['isPublished'], _count: { _all: true } }),
-  ]);
+  // Read all three values inside ONE interactive transaction at REPEATABLE READ
+  // so they observe the same snapshot.
+  //
+  // Under PostgreSQL's READ COMMITTED every statement takes its own connection
+  // and therefore its own snapshot, so a concurrent insert landing between them
+  // makes `summary` disagree with `total`. SQLite serialised the reads and hid
+  // the defect; it surfaced immediately after the move to PostgreSQL.
+  //
+  // REPEATABLE READ is used rather than the default because it is the level that
+  // actually pins a snapshot for the whole transaction. (An array-form
+  // `$transaction` would also be consistent, but it loses contextual typing on
+  // `groupBy`, so the `by: ['isPublished']` tuple no longer type-checks.)
+  const { courses, total, statusCounts } = await prisma.$transaction(
+    async (tx) => {
+      const [rows, count, groups] = await Promise.all([
+        tx.course.findMany({
+          where,
+          orderBy: { updatedAt: 'desc' },
+          skip: (page - 1) * limit,
+          take: limit,
+          select: {
+            id: true,
+            title: true,
+            isPublished: true,
+            publishedAt: true,
+            priceMinor: true,
+            currency: true,
+            createdAt: true,
+            _count: { select: { lessons: true, courseEnrollments: true } },
+            teacher: { select: { name: true } },
+          },
+        }),
+        tx.course.count({ where }),
+        tx.course.groupBy({
+          by: ['isPublished'],
+          _count: { _all: true },
+        }),
+      ]);
+      return { courses: rows, total: count, statusCounts: groups };
+    },
+    { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead }
+  );
 
-  const summary: Record<string, number> = { PUBLISHED: 0, DRAFT: 0 };
-  for (const group of statusCounts) {
-    summary[group.isPublished ? 'PUBLISHED' : 'DRAFT'] = group._count._all;
+  // The summary must describe the SAME result set as `total`.
+  //
+  // Previously groupBy ran with no filter, so `?status=DRAFT` returned a
+  // platform-wide summary next to a filtered total. When a single status filter
+  // is active we now derive the buckets straight from `total` â€” which is also
+  // immune to the concurrent-write race, because it is a value we already hold.
+  let summary: Record<string, number> = { PUBLISHED: 0, DRAFT: 0 };
+  if (status === 'PUBLISHED') {
+    summary = { PUBLISHED: total, DRAFT: 0 };
+  } else if (status === 'DRAFT') {
+    summary = { PUBLISHED: 0, DRAFT: total };
+  } else {
+    for (const group of statusCounts) {
+      const counts = group._count;
+      const value =
+        counts && typeof counts === 'object' && '_all' in counts ? counts._all ?? 0 : 0;
+      summary[group.isPublished ? 'PUBLISHED' : 'DRAFT'] = value;
+    }
   }
 
   const rows: AdminCourseRow[] = courses.map((course) => ({
@@ -70,7 +108,7 @@ export const listAdminCourses = async ({
     currency: course.currency,
     lessonCount: course._count.lessons,
     enrollmentCount: course._count.courseEnrollments,
-    teacherName: course.teacher?.name ?? 'معلم محذوف',
+    teacherName: course.teacher?.name ?? 'Ù…Ø¹Ù„Ù… Ù…Ø­Ø°ÙˆÙ',
     createdAt: course.createdAt,
   }));
 

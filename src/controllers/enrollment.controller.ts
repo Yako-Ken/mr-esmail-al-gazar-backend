@@ -2,13 +2,14 @@ import { Request, Response, RequestHandler } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { AuthUser } from '../middlewares/auth.middleware';
 import { logger } from '../utils/logger';
+import { toProtectedMediaUrl } from '../utils/urls';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 
 const formatUrl = (baseUrl: string, url: string | null | undefined) => {
   if (!url) return null;
   if (url.startsWith('http')) return url;
-  return `${baseUrl}/uploads/${url}`;
+  return toProtectedMediaUrl(baseUrl, url);
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -107,9 +108,48 @@ export const updateEnrollmentStatus: RequestHandler = async (req, res): Promise<
       return;
     }
 
+    const nextStatus = status.toUpperCase();
+
+    // Money gate. A paid course must not become APPROVED without a settled
+    // order for that exact student/course pair, otherwise a teacher can grant
+    // paid content for free by flipping the status directly.
+    //
+    // Only APPROVED is gated. REJECTED and PENDING stay open because they are
+    // the safe direction of travel — blocking a rejection would be worse than
+    // allowing it.
+    //
+    // The webhook (paymobWebhook) remains the authority that writes APPROVED on
+    // its own; this check governs the manual teacher path only.
+    const coursePriceMinor = enrollment.course.priceMinor || 0;
+    if (nextStatus === 'APPROVED' && coursePriceMinor > 0) {
+      const paidOrder = await prisma.paymentOrder.findFirst({
+        where: {
+          studentId: enrollment.studentId,
+          courseId: enrollment.courseId,
+          status: 'PAID',
+        },
+        select: { id: true, paidAt: true },
+      });
+
+      if (!paidOrder) {
+        logger.warn('Blocked manual approval of a paid course without a settled order', {
+          enrollmentId: enrollment.id,
+          courseId: enrollment.courseId,
+          coursePriceMinor,
+          actorId: authUser.id,
+        });
+        res.status(403).json({
+          error:
+            'Cannot approve: this course is paid and no completed payment was found for this student.',
+          code: 'PAYMENT_REQUIRED',
+        });
+        return;
+      }
+    }
+
     const updated = await prisma.courseEnrollment.update({
       where: { id },
-      data: { status: status.toUpperCase() },
+      data: { status: nextStatus },
     });
 
     res.json({

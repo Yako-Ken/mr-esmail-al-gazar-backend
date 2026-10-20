@@ -6,7 +6,7 @@ import { env } from '../utils/env';
 import { logger } from '../utils/logger';
 import { verifyPaymobHmac } from '../utils/paymobHmac';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 
 const publicOrder = (order: {
   id: string;
@@ -233,69 +233,82 @@ export const paymobWebhook: RequestHandler = async (req, res): Promise<void> => 
       voided: object.is_voided === true,
     });
 
-    await prisma.$transaction(async (tx) => {
-      const duplicate = await tx.paymentEvent.findUnique({ where: { externalEventId } });
-      if (duplicate) return;
+    try {
+      await prisma.$transaction(async (tx) => {
+        const duplicate = await tx.paymentEvent.findUnique({ where: { externalEventId } });
+        if (duplicate) return;
 
-      const event = await tx.paymentEvent.create({
-        data: {
-          externalEventId,
-          paymentOrderId: order.id,
-          eventType: successful ? 'PAYMENT_SUCCEEDED' : 'PAYMENT_UPDATED',
-          payload: eventPayload,
-          processingStatus: amountMatches ? 'PROCESSING' : 'REJECTED_AMOUNT_MISMATCH',
-        },
+        const event = await tx.paymentEvent.create({
+          data: {
+            externalEventId,
+            paymentOrderId: order.id,
+            eventType: successful ? 'PAYMENT_SUCCEEDED' : 'PAYMENT_UPDATED',
+            payload: eventPayload,
+            processingStatus: amountMatches ? 'PROCESSING' : 'REJECTED_AMOUNT_MISMATCH',
+          },
+        });
+
+        if (successful && amountMatches) {
+          await tx.paymentOrder.update({
+            where: { id: order.id },
+            data: { status: 'PAID', paidAt: new Date(), failureReason: null },
+          });
+          await tx.paymentAttempt.updateMany({
+            where: { paymentOrderId: order.id, status: 'CREATED' },
+            data: { status: 'SUCCEEDED', providerAttemptId: transactionId },
+          });
+          await tx.courseEntitlement.upsert({
+            where: { studentId_courseId: { studentId: order.studentId, courseId: order.courseId } },
+            create: {
+              studentId: order.studentId,
+              courseId: order.courseId,
+              sourceOrderId: order.id,
+              status: 'ACTIVE',
+            },
+            update: { sourceOrderId: order.id, status: 'ACTIVE', revokedAt: null },
+          });
+          await tx.courseEnrollment.upsert({
+            where: { studentId_courseId: { studentId: order.studentId, courseId: order.courseId } },
+            create: {
+              studentId: order.studentId,
+              courseId: order.courseId,
+              paymentMethod: 'PAYMOB',
+              status: 'APPROVED',
+            },
+            update: { paymentMethod: 'PAYMOB', status: 'APPROVED', receiptImageUrl: null },
+          });
+        } else if (!amountMatches) {
+          await tx.paymentOrder.update({
+            where: { id: order.id },
+            data: { failureReason: 'WEBHOOK_AMOUNT_MISMATCH' },
+          });
+        } else if (object.pending !== true) {
+          await tx.paymentOrder.update({
+            where: { id: order.id },
+            data: { status: 'FAILED', failureReason: 'PROVIDER_REJECTED' },
+          });
+        }
+
+        await tx.paymentEvent.update({
+          where: { id: event.id },
+          data: { processingStatus: amountMatches ? 'PROCESSED' : 'REJECTED_AMOUNT_MISMATCH', processedAt: new Date() },
+        });
       });
-
-      if (successful && amountMatches) {
-        await tx.paymentOrder.update({
-          where: { id: order.id },
-          data: { status: 'PAID', paidAt: new Date(), failureReason: null },
-        });
-        await tx.paymentAttempt.updateMany({
-          where: { paymentOrderId: order.id, status: 'CREATED' },
-          data: { status: 'SUCCEEDED', providerAttemptId: transactionId },
-        });
-        await tx.courseEntitlement.upsert({
-          where: { studentId_courseId: { studentId: order.studentId, courseId: order.courseId } },
-          create: {
-            studentId: order.studentId,
-            courseId: order.courseId,
-            sourceOrderId: order.id,
-            status: 'ACTIVE',
-          },
-          update: { sourceOrderId: order.id, status: 'ACTIVE', revokedAt: null },
-        });
-        await tx.courseEnrollment.upsert({
-          where: { studentId_courseId: { studentId: order.studentId, courseId: order.courseId } },
-          create: {
-            studentId: order.studentId,
-            courseId: order.courseId,
-            paymentMethod: 'PAYMOB',
-            status: 'APPROVED',
-          },
-          update: { paymentMethod: 'PAYMOB', status: 'APPROVED', receiptImageUrl: null },
-        });
-      } else if (!amountMatches) {
-        await tx.paymentOrder.update({
-          where: { id: order.id },
-          data: { failureReason: 'WEBHOOK_AMOUNT_MISMATCH' },
-        });
-      } else if (object.pending !== true) {
-        await tx.paymentOrder.update({
-          where: { id: order.id },
-          data: { status: 'FAILED', failureReason: 'PROVIDER_REJECTED' },
-        });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        logger.info(`Concurrent duplicate webhook event detected for ${externalEventId}, resolving idempotently.`);
+        res.json({ received: true, matched: true });
+        return;
       }
-
-      await tx.paymentEvent.update({
-        where: { id: event.id },
-        data: { processingStatus: amountMatches ? 'PROCESSED' : 'REJECTED_AMOUNT_MISMATCH', processedAt: new Date() },
-      });
-    });
+      throw error;
+    }
 
     res.json({ received: true, matched: true });
   } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+      res.json({ received: true, matched: true });
+      return;
+    }
     logger.error('paymobWebhook error:', error);
     res.status(500).json({ error: 'Webhook processing failed.' });
   }

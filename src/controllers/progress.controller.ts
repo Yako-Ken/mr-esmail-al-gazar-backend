@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { logger } from '../utils/logger';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 
 export const updateProgress = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -13,8 +13,10 @@ export const updateProgress = async (req: Request, res: Response): Promise<void>
     }
 
     const { lessonId, courseId, watchPercentage } = req.body;
+    const cleanLessonId = String(lessonId ?? '').trim();
+    const requestedCourseId = courseId == null ? null : String(courseId).trim();
 
-    if (!lessonId || watchPercentage === undefined) {
+    if (!cleanLessonId || watchPercentage === undefined) {
       res.status(400).json({ error: 'Missing lessonId or watchPercentage' });
       return;
     }
@@ -25,6 +27,33 @@ export const updateProgress = async (req: Request, res: Response): Promise<void>
       return;
     }
 
+    const lesson = await prisma.lesson.findUnique({
+      where: { id: cleanLessonId },
+      select: { id: true, courseId: true, course: { select: { isPublished: true } } },
+    });
+    if (!lesson?.courseId || !lesson.course?.isPublished) {
+      res.status(404).json({ error: 'Lesson or course not found' });
+      return;
+    }
+    if (requestedCourseId && requestedCourseId !== lesson.courseId) {
+      res.status(400).json({ error: 'Lesson does not belong to the requested course' });
+      return;
+    }
+
+    const enrollment = await prisma.courseEnrollment.findUnique({
+      where: {
+        studentId_courseId: {
+          studentId: authUser.id,
+          courseId: lesson.courseId,
+        },
+      },
+      select: { status: true },
+    });
+    if (enrollment?.status !== 'APPROVED') {
+      res.status(403).json({ error: 'You do not have access to this lesson' });
+      return;
+    }
+
     // Determine completion (threshold 90%)
     const isCompleted = percentage >= 90.0;
 
@@ -32,18 +61,18 @@ export const updateProgress = async (req: Request, res: Response): Promise<void>
       where: {
         studentId_lessonId: {
           studentId: authUser.id,
-          lessonId: lessonId,
+          lessonId: cleanLessonId,
         },
       },
       update: {
         watchPercentage: percentage,
         isCompleted: isCompleted,
-        ...(courseId ? { courseId: courseId } : {}),
+        courseId: lesson.courseId,
       },
       create: {
         studentId: authUser.id,
-        lessonId: lessonId,
-        courseId: courseId,
+        lessonId: cleanLessonId,
+        courseId: lesson.courseId,
         watchPercentage: percentage,
         isCompleted: isCompleted,
       },

@@ -1,4 +1,5 @@
 import axios from 'axios';
+import fs from 'fs';
 import { logger } from './logger';
 
 const STORAGE_ZONE_NAME = process.env.BUNNY_STORAGE_ZONE_NAME;
@@ -94,6 +95,38 @@ export class BunnyService {
         throw new Error('Bunny.net authentication failed. Please check your Access Key.');
       }
 
+      throw new Error(`Failed to upload file to Bunny.net: ${error.message}`);
+    }
+  }
+
+  /**
+   * Streams a disk-backed file to Bunny.net Storage without loading it into
+   * the Node.js heap. The caller owns cleanup of the local temporary file.
+   */
+  static async uploadFileFromPath(filePath: string, remotePath: string): Promise<string> {
+    try {
+      if (!STORAGE_ZONE_NAME || !ACCESS_KEY || !CDN_URL) {
+        throw new Error('Bunny.net Storage Zone, access key, and CDN URL must be configured.');
+      }
+      const { size } = await fs.promises.stat(filePath);
+      const url = `${BASE_STORAGE_URL}/${remotePath}`;
+      const stream = fs.createReadStream(filePath);
+      const response = await axios.put(url, stream, {
+        headers: {
+          AccessKey: ACCESS_KEY,
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': size,
+        },
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+        timeout: 300000,
+      });
+      if (response.status !== 201 && response.status !== 200) {
+        throw new Error(`Bunny.net upload failed with status ${response.status}`);
+      }
+      return `${CDN_URL}/${remotePath}`;
+    } catch (error: any) {
+      logger.error('❌ Bunny.net streamed upload error:', error.response?.data || error.message);
       throw new Error(`Failed to upload file to Bunny.net: ${error.message}`);
     }
   }

@@ -1,10 +1,10 @@
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, HomeworkStatus } from '@prisma/client';
 import { AuthUser } from '../middlewares/auth.middleware';
 import { resolveOwnerId } from '../utils/ownerId';
 import { NotFoundError, ForbiddenError, BadRequestError } from '../utils/appError';
 import { logger } from '../utils/logger';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 
 const assertStudent = (authUser: AuthUser | undefined, message: string): AuthUser => {
   if (!authUser || authUser.role !== 'STUDENT') {
@@ -172,19 +172,8 @@ export const getRecentLessons = async (authUser: AuthUser | undefined) => {
 export const getTeacherStudents = async (authUser: AuthUser) => {
   const ownerId = resolveOwnerId(authUser);
 
-  // Fetch ALL students
-  const allStudents = await prisma.user.findMany({
-    where: { role: 'STUDENT' },
-    select: {
-      id: true,
-      name: true,
-      phone: true,
-      email: true,
-    },
-    orderBy: { name: 'asc' },
-  });
-
-  // Fetch enrollments for these students in THIS teacher's courses
+  // Fetch enrollments first, then fetch only the students belonging to this
+  // teacher's courses. Never expose the global student directory.
   const teacherEnrollments = await prisma.courseEnrollment.findMany({
     where: {
       course: { teacherId: ownerId },
@@ -201,8 +190,16 @@ export const getTeacherStudents = async (authUser: AuthUser) => {
     },
   });
 
-  // Get parent relations for student parent phones
-  const studentIds = allStudents.map(s => s.id);
+  const studentIds = [...new Set(teacherEnrollments.map((enrollment) => enrollment.studentId))];
+  const allStudents = studentIds.length === 0
+    ? []
+    : await prisma.user.findMany({
+        where: { id: { in: studentIds }, role: 'STUDENT' },
+        select: { id: true, name: true, phone: true, email: true },
+        orderBy: { name: 'asc' },
+      });
+
+  // Get parent relations only for students in this teacher's scope.
   const parentRelations = await prisma.studentParentRelation.findMany({
     where: { studentId: { in: studentIds } },
     include: {
@@ -491,7 +488,16 @@ export const getAssignmentSubmissions = async (authUser: AuthUser, assignmentId:
     })
   );
 
-  logger.info(`📡 Submissions for ${assignmentId}:`, submissions.map(s => ({ n: s.studentName, st: s.status, hasF: !!s.hwFileUrl })));
+  // Log counts, not identities: this line previously emitted every student's
+  // real name alongside their submission status.
+  logger.info('Submissions summary', {
+    assignmentId,
+    total: submissions.length,
+    byStatus: submissions.reduce<Record<string, number>>((acc, s) => {
+      acc[s.status] = (acc[s.status] ?? 0) + 1;
+      return acc;
+    }, {}),
+  });
 
   return submissions;
 };
@@ -500,14 +506,26 @@ export const getAssignmentSubmissions = async (authUser: AuthUser, assignmentId:
 // POST /api/teachers/assignments/:assignmentId/status
 // Approve or reject a student submission (File Verification Workflow)
 // ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Update the homework submission status.
+ *
+ * The status must be one of the real HomeworkStatus values. This endpoint used
+ * to accept APPROVED/REJECTED — which are *enrollment* states, not homework
+ * states — and wrote them straight into Tracking.hwStatus. That produced a
+ * fifth, disjoint vocabulary that the grading dashboard could never read, which
+ * is why grading was effectively unreachable.
+ */
 export const updateSubmissionStatus = async (
   authUser: AuthUser,
   assignmentId: string,
   status: string | undefined,
   studentId: string | undefined
 ) => {
-  if (!status || !['APPROVED', 'REJECTED'].includes(status)) {
-    throw new BadRequestError('Invalid status. Must be APPROVED or REJECTED.');
+  const ALLOWED: HomeworkStatus[] = ['SUBMITTED', 'UNDER_REVIEW', 'GRADED', 'NEEDS_REVISION'];
+  const requested = status?.toUpperCase() as HomeworkStatus | undefined;
+
+  if (!requested || !ALLOWED.includes(requested as HomeworkStatus)) {
+    throw new BadRequestError(`Invalid status. Must be one of: ${ALLOWED.join(', ')}.`);
   }
 
   if (!studentId) {
@@ -530,28 +548,59 @@ export const updateSubmissionStatus = async (
     throw new ForbiddenError('Assignment not found or forbidden');
   }
 
+  if (!lesson.courseId) {
+    throw new ForbiddenError('Assignment has no course');
+  }
+
+  const enrolledStudent = await prisma.courseEnrollment.findUnique({
+    where: {
+      studentId_courseId: {
+        studentId,
+        courseId: lesson.courseId,
+      },
+    },
+    select: { status: true },
+  });
+  if (enrolledStudent?.status !== 'APPROVED') {
+    throw new ForbiddenError('Student is not enrolled in this course');
+  }
+
   // Find or create tracking record
   let tracking = await prisma.tracking.findUnique({
     where: { studentId_lessonId: { studentId, lessonId: assignmentId } },
   });
 
-  if (!tracking) {
-    // Create tracking if doesn't exist
-    tracking = await prisma.tracking.create({
-      data: {
-        studentId,
-        lessonId: assignmentId,
-        isPresent: true,
-        hwStatus: status,
-      },
-    });
-  } else {
-    // Update existing tracking
-    tracking = await prisma.tracking.update({
-      where: { id: tracking.id },
-      data: { hwStatus: status },
-    });
-  }
+if (!tracking) {
+      // Create tracking if doesn't exist.
+      // isPresent is intentionally NOT set here: grading homework must never
+      // mark a student present. Attendance has one authoritative source
+      // (AttendanceRecord via the QR flow), and writing it from a side effect
+      // made parents see attendance that never happened.
+      tracking = await prisma.tracking.create({
+        data: {
+          studentId,
+          lessonId: assignmentId,
+          hwStatus: requested,
+          hwResubmitCount: 0,
+        },
+      });
+    } else {
+      // Update existing tracking. Guard the transition so the documented
+      // lifecycle cannot be skipped by writing an arbitrary status.
+      const now = Date.now();
+      if (tracking.hwStatus === 'GRADED' && requested !== 'GRADED') {
+        throw new BadRequestError('Graded homework cannot return to an earlier state.');
+      }
+      tracking = await prisma.tracking.update({
+        where: { id: tracking.id },
+        data: {
+          hwStatus: requested,
+          ...(requested === 'NEEDS_REVISION'
+            ? { hwResubmitCount: { increment: 1 }, updatedAt: new Date(now) }
+            : {}),
+        },
+      });
+    }
 
   logger.info('Submission status updated:', { assignmentId, studentId, status, by: authUser.id });
   return tracking;

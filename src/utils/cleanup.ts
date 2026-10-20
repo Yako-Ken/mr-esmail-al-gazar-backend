@@ -3,7 +3,7 @@ import path from 'path';
 import { PrismaClient } from '@prisma/client';
 import { logger } from './logger';
 
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 
 const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
 

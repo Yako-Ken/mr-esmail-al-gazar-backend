@@ -86,7 +86,16 @@ router.post(
 );
 router.put('/profile', authMiddleware, editProfile);
 router.patch('/profile', authMiddleware, editProfile);
-router.post('/change-password', authMiddleware, validateBody(changePasswordSchema), changePassword);
+// change-password requires the current password, so a stolen 7-day token alone
+// must not be enough to brute-force it. Same limiter as the other sensitive
+// account actions (privacy export / deletion).
+router.post(
+  '/change-password',
+  authMiddleware,
+  sensitiveActionRateLimit,
+  validateBody(changePasswordSchema),
+  changePassword,
+);
 
 // Account preferences (consent + notification settings)
 router.get('/preferences', authMiddleware, getPreferences);
@@ -111,6 +120,14 @@ router.get('/support/tickets', authMiddleware, listSupportTickets);
 // Forgot Password Flow
 router.post('/forgot-password', otpRateLimit, validateBody(forgotPasswordRequestSchema), requestForgotPasswordOTP);
 router.post('/verify-otp', otpRateLimit, validateBody(verifyOtpSchema), verifyForgotPasswordOTP);
-router.post('/reset-password', validateBody(resetPasswordSchema), resetPassword);
+// reset-password consumes an OTP-family token and is unauthenticated, so the
+// token itself is the only credential. Matches the stricter otpRateLimit already
+// applied to /verify-otp rather than the 10-attempt sensitive-action budget.
+router.post(
+  '/reset-password',
+  otpRateLimit,
+  validateBody(resetPasswordSchema),
+  resetPassword,
+);
 
 export default router;

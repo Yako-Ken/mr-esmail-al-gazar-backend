@@ -1,7 +1,7 @@
 import { Request, RequestHandler } from 'express';
 import { AuthUser } from '../middlewares/auth.middleware';
 import { handleControllerError } from '../middlewares/errorHandler';
-import { getBaseUrl, toAbsoluteUploadUrl } from '../utils/urls';
+import { getBaseUrl, toAbsoluteUploadUrl, toProtectedMediaUrl } from '../utils/urls';
 import * as lessonService from '../services/lesson.service';
 import { env } from '../utils/env';
 import { isAllowedBunnyUrl, signBunnyCdnUrl } from '../utils/bunnyToken';
@@ -31,6 +31,39 @@ export const markAttendance: RequestHandler = async (req, res): Promise<void> =>
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/lessons/submit-quiz
 // ─────────────────────────────────────────────────────────────────────────────
+export const submitHomework: RequestHandler = async (req, res): Promise<void> => {
+  try {
+    const authUser = (req as Request & { user?: AuthUser }).user;
+    if (!authUser || authUser.role !== 'STUDENT') {
+      res.status(403).json({ error: 'Students only' });
+      return;
+    }
+
+    const lessonId = String(req.params.id ?? '').trim();
+    const { answer } = req.body as { answer: string };
+    const { lesson } = await lessonService.getLessonById(lessonId, authUser);
+    if (!lesson.homeworkText && !lesson.homeworkPdfUrl) {
+      res.status(400).json({ error: 'This lesson has no homework' });
+      return;
+    }
+
+const existing = await lessonService.getTracking(authUser.id, lessonId);
+      // Once work has been handed in it must not be silently replaced. The
+      // only state a student may submit from is NOT_SUBMITTED or a returned
+      // NEEDS_REVISION (resubmission after a teacher's revision request).
+      const RESUBMITTABLE: string[] = ['NOT_SUBMITTED', 'NEEDS_REVISION'];
+      if (existing && !RESUBMITTABLE.includes(existing.hwStatus)) {
+        res.status(409).json({ error: 'Homework already submitted', tracking: existing });
+        return;
+      }
+
+    const tracking = await lessonService.submitHomework(authUser.id, lessonId, answer);
+    res.status(201).json({ success: true, tracking });
+  } catch (error) {
+    handleControllerError('submitHomework', error, res);
+  }
+};
+
 export const submitQuiz: RequestHandler = async (req, res): Promise<void> => {
   try {
     const { lessonId, answers } = req.body;
@@ -186,8 +219,13 @@ export const getLessonById: RequestHandler = async (req, res): Promise<void> => 
     const { lesson, userTracking } = await lessonService.getLessonById(id, authUser);
     const baseUrl = getBaseUrl(req);
 
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.json({
+    const isOverdue = Boolean(
+      lesson.homeworkDueAt &&
+        new Date() > new Date(lesson.homeworkDueAt) &&
+        (!userTracking || !userTracking.hwSubmittedAt || userTracking.hwStatus === 'NOT_SUBMITTED'),
+    );
+
+    const lessonData = {
       id: lesson.id,
       title: lesson.title,
       description: lesson.description,
@@ -197,15 +235,25 @@ export const getLessonById: RequestHandler = async (req, res): Promise<void> => 
       courseId: lesson.courseId,
       hasVideo: Boolean(lesson.videoUrl || lesson.bunnyVideoId),
       thumbnailUrl: toAbsoluteUploadUrl(baseUrl, lesson.thumbnailUrl),
-      pdfUrl: toAbsoluteUploadUrl(baseUrl, lesson.pdfUrl),
+      pdfUrl: toProtectedMediaUrl(baseUrl, lesson.pdfUrl),
       homeworkText: lesson.homeworkText,
-      homeworkPdfUrl: toAbsoluteUploadUrl(baseUrl, lesson.homeworkPdfUrl),
+      homeworkPdfUrl: toProtectedMediaUrl(baseUrl, lesson.homeworkPdfUrl),
+      homeworkDueAt: lesson.homeworkDueAt ? lesson.homeworkDueAt.toISOString() : null,
+      isOverdue,
       hasQuiz: lesson.quizzes.length > 0,
-      hasCompletedQuiz: userTracking != null && (userTracking.essayStatus !== 'NOT_SUBMITTED' || userTracking.quizScore !== null),
+      hasCompletedQuiz: userTracking?.quizScore !== null && userTracking?.quizScore !== undefined,
       quizScore: userTracking?.quizScore ?? null,
+      hwStatus: userTracking?.hwStatus ?? 'NOT_SUBMITTED',
+      essayStatus: userTracking?.essayStatus ?? 'NOT_SUBMITTED',
       trackingId: userTracking?.id ?? null,
       createdAt: lesson.createdAt,
       teacher: lesson.teacher,
+    };
+
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.json({
+      ...lessonData,
+      lesson: lessonData,
     });
   } catch (error) {
     handleControllerError('getLessonById', error, res);
@@ -218,6 +266,8 @@ export const getLessonPlayback: RequestHandler = async (req, res): Promise<void>
   try {
     const authUser = (req as Request & { user?: AuthUser }).user;
     const { lesson } = await lessonService.getLessonById(req.params.id, authUser);
+
+    res.setHeader('Cache-Control', 'private, no-store, max-age=0');
 
     if (lesson.bunnyVideoId) {
       const streamCdn = env.BUNNY_STREAM_CDN_URL?.replace(/\/$/, '');

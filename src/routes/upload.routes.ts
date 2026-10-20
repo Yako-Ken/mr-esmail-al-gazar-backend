@@ -9,32 +9,76 @@ import { BunnyService } from '../utils/bunny.service';
 import { env } from '../utils/env';
 import { logger } from '../utils/logger';
 import { createBunnyTusTicket } from '../utils/bunnyTus';
+import { uploadRateLimit, chunkUploadRateLimit } from '../middlewares/rateLimit.middleware';
+import {
+  validateUploadedFiles,
+  ValidatedField,
+  ValidationResult,
+} from '../services/upload-validation.service';
 
 const router = express.Router();
-const prisma = new PrismaClient();
+import prisma from '../config/prisma';
 
 interface AuthRequestWithFiles extends Request {
   user?: AuthUser;
   files?: Record<string, Express.Multer.File[]>;
 }
 
-// ─── Multer memory storage ───────────────────────────────────────────────────
-// Files will be stored in memory as buffers, then uploaded to Bunny.net
-const storage = multer.memoryStorage();
+// ─── Disk-backed multipart storage ───────────────────────────────────────────
+// Keep large request bodies off the Node.js heap. Files are uploaded to Bunny
+// from disk and removed in each handler's finally block.
+const MULTIPART_TEMP_DIR = path.join(process.cwd(), 'uploads', 'temp', 'multipart');
+fs.mkdirSync(MULTIPART_TEMP_DIR, { recursive: true });
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, MULTIPART_TEMP_DIR),
+  filename: (_req, file, cb) => cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}-${path.basename(file.originalname)}`),
+});
 
 const upload = multer({
   storage,
   limits: {
-    fileSize: 500 * 1024 * 1024, // 500 MB max for Bunny.net uploads
-    fieldSize: 10 * 1024 * 1024, // 10 MB for text fields
+    // Direct uploads are intentionally smaller because multer keeps the
+    // request in memory. Larger videos must use /chunk or Bunny TUS.
+    fileSize: 100 * 1024 * 1024,
+    fieldSize: 10 * 1024 * 1024,
   },
 });
 
 // Helper: Generate a unique filename and remote path for Bunny.net
-const getBunnyPath = (file: Express.Multer.File, context: string = ''): string => {
+const cleanupMultipartFiles = (req: Request): void => {
+  try {
+    const files: Express.Multer.File[] = [];
+    if (req.file) files.push(req.file);
+    if (Array.isArray(req.files)) files.push(...req.files);
+    else if (req.files) Object.values(req.files).forEach((items) => files.push(...items));
+    for (const file of files) {
+      if (file.path) fs.rmSync(file.path, { force: true });
+    }
+  } catch {
+    // Cleanup must never mask the original request result.
+  }
+};
+
+const uploadToBunny = (file: Express.Multer.File, remotePath: string): Promise<string> =>
+  file.path
+    ? BunnyService.uploadFileFromPath(file.path, remotePath)
+    : BunnyService.uploadFile(file.buffer, remotePath);
+
+// Helper: Generate a unique filename and remote path for Bunny.net
+const getBunnyPath = (
+  file: Express.Multer.File,
+  context: string = '',
+  verified?: ValidatedField,
+): string => {
   const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-  let ext = path.extname(file.originalname);
   const fieldname = file.fieldname.toLowerCase();
+
+  // When the bytes have already been signature-verified, BOTH the extension and
+  // the routing category come from the detected content. The client's filename
+  // and Content-Type are not consulted for either: they are attacker-supplied,
+  // and repeating them here is what let a PHP payload land in the CDN under an
+  // image name.
+  let ext = verified ? verified.extension : path.extname(file.originalname);
 
   if (!ext) {
     if (fieldname === 'video')     ext = '.mp4';
@@ -44,20 +88,41 @@ const getBunnyPath = (file: Express.Multer.File, context: string = ''): string =
   }
 
   const fileName = `${fieldname}-${uniqueSuffix}${ext}`;
-  
-  // Categorize in Bunny storage
-  if (file.mimetype.startsWith('video/')) {
+
+  // Categorize in Bunny storage. A verified file is routed by its field and its
+  // detected type; only unverified (video/chunk) uploads fall back to the
+  // client-declared Content-Type.
+  if (!verified && file.mimetype.startsWith('video/')) {
     return `videos/${fileName}`;
   } else if (fieldname.includes('thumbnail') || fieldname.includes('image')) {
     if (context.includes('course')) {
       return `thumbnails/course-thumbnails/${fileName}`;
     }
     return `thumbnails/lesson-thumbnails/${fileName}`;
-  } else if (fieldname.includes('pdf') || file.mimetype === 'application/pdf') {
+  } else if (fieldname.includes('pdf') || verified?.mime === 'application/pdf') {
     return `pdfs/${fileName}`;
   }
-  
+
   return `others/${fileName}`;
+};
+
+/**
+ * Content gate for the image/PDF fields of a request.
+ *
+ * Runs before any handler reaches remote storage, so a rejected payload is never
+ * uploaded on its way to being rejected. The `finally` block of every handler
+ * still removes the multer temp file, so a 415 leaves nothing behind.
+ */
+const rejectUnverifiedContent = (
+  verdict: ValidationResult,
+  res: Parameters<RequestHandler>[1],
+): boolean => {
+  if (verdict.ok) return false;
+  logger.warn(
+    `Upload rejected: ${verdict.failure.field} did not match required content type`,
+  );
+  res.status(415).json({ error: verdict.failure.message });
+  return true;
 };
 
 // ─── Upload handler ───────────────────────────────────────────────────────────
@@ -77,12 +142,34 @@ export const uploadLesson: RequestHandler = async (req, res): Promise<void> => {
 
     const { subject, grade, title, homeworkText, description, quizData, courseId, bunnyVideoId, videoLibraryId } = req.body;
 
-    if (!subject || !grade || !title) {
-      res.status(400).json({ error: 'Subject, grade, and title are required' });
+    if (!subject || !grade || !title || !courseId) {
+      res.status(400).json({ error: 'Subject, grade, title, and courseId are required' });
+      return;
+    }
+
+    const course = await prisma.course.findFirst({
+      where: authUser.role === 'SUPER_ADMIN'
+        ? { id: String(courseId).trim() }
+        : { id: String(courseId).trim(), teacherId: ownerId },
+      select: { id: true, subject: true, grade: true },
+    });
+    if (!course) {
+      res.status(403).json({ error: 'Course not found or not owned by this account' });
       return;
     }
 
     const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
+
+    // Content gate FIRST. The thumbnail and homework PDF are verified from their
+    // leading bytes before anything is sent to Bunny, so a payload that lies
+    // about being an image is refused without ever leaving this process and
+    // without a lesson row being written.
+    const verdict = validateUploadedFiles({
+      thumbnail: files?.thumbnail?.[0],
+      pdf: files?.pdf?.[0],
+    });
+    if (rejectUnverifiedContent(verdict, res)) return;
+    const verified = verdict.ok ? verdict.fields : {};
 
     // We support either a direct video file (Storage) or a Bunny Stream upload ticket.
     // In BOTH cases a playable URL must reach the DB — previously a stream-only upload
@@ -103,7 +190,7 @@ export const uploadLesson: RequestHandler = async (req, res): Promise<void> => {
     } else if (files?.video?.[0]) {
       // Legacy/Direct upload to Bunny Storage
       const videoPath = getBunnyPath(files.video[0]);
-      videoUrl = await BunnyService.uploadFile(files.video[0].buffer, videoPath);
+      videoUrl = await uploadToBunny(files.video[0], videoPath);
     } else {
       res.status(400).json({ error: 'Video file or Bunny Video ID is required.' });
       return;
@@ -111,14 +198,14 @@ export const uploadLesson: RequestHandler = async (req, res): Promise<void> => {
 
     let thumbnailUrl: string | undefined;
     if (files?.thumbnail?.[0]) {
-      const thumbPath = getBunnyPath(files.thumbnail[0], courseId ? 'course' : 'lesson');
-      thumbnailUrl = await BunnyService.uploadFile(files.thumbnail[0].buffer, thumbPath);
+      const thumbPath = getBunnyPath(files.thumbnail[0], courseId ? 'course' : 'lesson', verified.thumbnail);
+      thumbnailUrl = await uploadToBunny(files.thumbnail[0], thumbPath);
     }
 
     let homeworkPdfUrl: string | undefined;
     if (files?.pdf?.[0]) {
-      const pdfPath = getBunnyPath(files.pdf[0]);
-      homeworkPdfUrl = await BunnyService.uploadFile(files.pdf[0].buffer, pdfPath);
+      const pdfPath = getBunnyPath(files.pdf[0], '', verified.pdf);
+      homeworkPdfUrl = await uploadToBunny(files.pdf[0], pdfPath);
     }
 
     let parsedQuestions: any = null;
@@ -186,6 +273,8 @@ export const uploadLesson: RequestHandler = async (req, res): Promise<void> => {
   } catch (error: any) {
     logger.error('Upload lesson error:', error);
     res.status(500).json({ error: error.message || 'Failed to upload lesson' });
+  } finally {
+    cleanupMultipartFiles(req);
   }
 };
 
@@ -242,7 +331,7 @@ export const uploadVideoOnly: RequestHandler = async (req, res): Promise<void> =
     }
 
     const videoPath = getBunnyPath(videoFile);
-    const videoUrl = await BunnyService.uploadFile(videoFile.buffer, videoPath);
+    const videoUrl = await uploadToBunny(videoFile, videoPath);
 
     res.status(200).json({
       success: true,
@@ -252,6 +341,8 @@ export const uploadVideoOnly: RequestHandler = async (req, res): Promise<void> =
   } catch (error: any) {
     logger.error('Video upload error:', error);
     res.status(500).json({ error: error.message || 'Failed to upload video' });
+  } finally {
+    cleanupMultipartFiles(req);
   }
 };
 
@@ -270,9 +361,18 @@ export const uploadThumbnailOnly: RequestHandler = async (req, res): Promise<voi
       return;
     }
 
+    // The extension and the Content-Type on this file are chosen by the caller.
+    // Accept or reject on the signature, and store the extension the bytes imply.
+    const verdict = validateUploadedFiles({ thumbnail: thumbnailFile });
+    if (rejectUnverifiedContent(verdict, res)) return;
+
     const context = req.originalUrl.includes('/courses') ? 'course' : 'lesson';
-    const thumbPath = getBunnyPath(thumbnailFile, context);
-    const thumbnailUrl = await BunnyService.uploadFile(thumbnailFile.buffer, thumbPath);
+    const thumbPath = getBunnyPath(
+      thumbnailFile,
+      context,
+      verdict.ok ? verdict.fields.thumbnail : undefined,
+    );
+    const thumbnailUrl = await uploadToBunny(thumbnailFile, thumbPath);
 
     res.status(200).json({
       success: true,
@@ -282,6 +382,8 @@ export const uploadThumbnailOnly: RequestHandler = async (req, res): Promise<voi
   } catch (error: any) {
     logger.error('Thumbnail upload error:', error);
     res.status(500).json({ error: error.message || 'Failed to upload thumbnail' });
+  } finally {
+    cleanupMultipartFiles(req);
   }
 };
 
@@ -300,8 +402,11 @@ export const uploadPdfOnly: RequestHandler = async (req, res): Promise<void> => 
       return;
     }
 
-    const pdfPath = getBunnyPath(pdfFile);
-    const pdfUrl = await BunnyService.uploadFile(pdfFile.buffer, pdfPath);
+    const verdict = validateUploadedFiles({ pdf: pdfFile });
+    if (rejectUnverifiedContent(verdict, res)) return;
+
+    const pdfPath = getBunnyPath(pdfFile, '', verdict.ok ? verdict.fields.pdf : undefined);
+    const pdfUrl = await uploadToBunny(pdfFile, pdfPath);
 
     res.status(200).json({
       success: true,
@@ -311,6 +416,8 @@ export const uploadPdfOnly: RequestHandler = async (req, res): Promise<void> => 
   } catch (error: any) {
     logger.error('PDF upload error:', error);
     res.status(500).json({ error: error.message || 'Failed to upload PDF' });
+  } finally {
+    cleanupMultipartFiles(req);
   }
 };
 
@@ -353,6 +460,10 @@ export const uploadChunk: RequestHandler = async (req, res): Promise<void> => {
       res.status(400).json({ error: 'Missing chunk data' });
       return;
     }
+    if (req.file.size > MAX_CHUNK_BYTES) {
+      res.status(413).json({ error: `Chunk exceeds max size of ${MAX_CHUNK_BYTES} bytes` });
+      return;
+    }
 
     const idx = parseInt(chunkIndex);
     const total = parseInt(totalChunks);
@@ -367,11 +478,19 @@ export const uploadChunk: RequestHandler = async (req, res): Promise<void> => {
     }
 
     const key = sanitizeUploadKey(String(fileName));
+    if (!key || key === '.' || key === '..') {
+      res.status(400).json({ error: 'Invalid file name' });
+      return;
+    }
     const uploadDir = path.join(CHUNK_ROOT, key);
     fs.mkdirSync(uploadDir, { recursive: true });
 
     const chunkPath = path.join(uploadDir, `${String(idx).padStart(6, '0')}.part`);
-    fs.writeFileSync(chunkPath, req.file.buffer);
+    if (req.file.path) {
+      fs.renameSync(req.file.path, chunkPath);
+    } else {
+      fs.writeFileSync(chunkPath, req.file.buffer);
+    }
 
     // Have we received every chunk?
     const received = fs.readdirSync(uploadDir).filter((f) => f.endsWith('.part')).length;
@@ -401,9 +520,8 @@ export const uploadChunk: RequestHandler = async (req, res): Promise<void> => {
       out.on('error', reject);
     });
 
-    const finalBuffer = fs.readFileSync(finalPath);
     const remotePath = `videos/${Date.now()}-${key}`;
-    const videoUrl = await BunnyService.uploadFile(finalBuffer, remotePath);
+    const videoUrl = await BunnyService.uploadFileFromPath(finalPath, remotePath);
 
     fs.rmSync(uploadDir, { recursive: true, force: true });
     reapStaleChunkDirs();
@@ -416,22 +534,24 @@ export const uploadChunk: RequestHandler = async (req, res): Promise<void> => {
   } catch (error: any) {
     logger.error('Chunk upload error:', error);
     res.status(500).json({ error: error.message || 'Failed to upload chunk' });
+  } finally {
+    cleanupMultipartFiles(req);
   }
 };
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
-router.post('/video-ticket', authMiddleware, checkTeacherApproval, getUploadTicket);
-router.post('/thumbnail', authMiddleware, checkTeacherApproval, upload.single('thumbnail'), uploadThumbnailOnly);
-router.post('/pdf', authMiddleware, checkTeacherApproval, upload.single('pdf'), uploadPdfOnly);
-router.post('/video', authMiddleware, checkTeacherApproval, upload.single('video'), uploadVideoOnly);
-router.post('/', authMiddleware, checkTeacherApproval, upload.fields([
+router.post('/video-ticket', authMiddleware, checkTeacherApproval, uploadRateLimit, getUploadTicket);
+router.post('/thumbnail', authMiddleware, checkTeacherApproval, uploadRateLimit, upload.single('thumbnail'), uploadThumbnailOnly);
+router.post('/pdf', authMiddleware, checkTeacherApproval, uploadRateLimit, upload.single('pdf'), uploadPdfOnly);
+router.post('/video', authMiddleware, checkTeacherApproval, uploadRateLimit, upload.single('video'), uploadVideoOnly);
+router.post('/', authMiddleware, checkTeacherApproval, uploadRateLimit, upload.fields([
   { name: 'video', maxCount: 1 },
   { name: 'thumbnail', maxCount: 1 },
   { name: 'pdf', maxCount: 1 },
 ]), uploadLesson);
 
-router.post('/chunk', authMiddleware, checkTeacherApproval, upload.single('chunk'), uploadChunk);
+router.post('/chunk', authMiddleware, checkTeacherApproval, chunkUploadRateLimit, upload.single('chunk'), uploadChunk);
 
 export default router;
 
