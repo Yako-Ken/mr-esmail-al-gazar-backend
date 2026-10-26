@@ -532,11 +532,27 @@ export const getLessonById = async (id: string, authUser?: AuthUser) => {
     if (!lesson.courseId || !lesson.course?.isPublished) {
       throw new ForbiddenError('This lesson is not available to students');
     }
-    const enrollment = await prisma.courseEnrollment.findUnique({
-      where: { studentId_courseId: { studentId: authUser.id, courseId: lesson.courseId } },
-    });
-    if (!enrollment || enrollment.status !== 'APPROVED') {
-      throw new ForbiddenError('You do not have access to this lesson');
+        // Access Control Logic: Free / Custom Whitelist / Course Students
+    if (lesson.accessMode === 'FREE') {
+      // Free lesson preview: open to all authenticated students
+    } else if (lesson.accessMode === 'CUSTOM_WHITELIST') {
+      const specificAccess = await prisma.lessonAccess.findUnique({
+        where: { studentId_lessonId: { studentId: authUser.id, lessonId: id } },
+      });
+      if (!specificAccess) {
+        throw new ForbiddenError('هذا الفيديو مخصص لطلاب محددين. يرجى مراجعة المعلم لتفعيل المشاهدة.');
+      }
+    } else {
+      // Default COURSE_STUDENTS: Enrolled in course OR explicitly granted access
+      const enrollment = await prisma.courseEnrollment.findUnique({
+        where: { studentId_courseId: { studentId: authUser.id, courseId: lesson.courseId } },
+      });
+      const specificAccess = await prisma.lessonAccess.findUnique({
+        where: { studentId_lessonId: { studentId: authUser.id, lessonId: id } },
+      });
+      if ((!enrollment || enrollment.status !== 'APPROVED') && !specificAccess) {
+        throw new ForbiddenError('يجب الاشتراك في هذا الكورس لمشاهدة هذا الدرس');
+      }
     }
   } else if (authUser.role === 'TEACHER' || authUser.role === 'ASSISTANT') {
     const ownerId = authUser.role === 'TEACHER' ? authUser.id : authUser.parentTeacherId;

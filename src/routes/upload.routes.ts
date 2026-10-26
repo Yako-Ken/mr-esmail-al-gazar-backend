@@ -539,9 +539,49 @@ export const uploadChunk: RequestHandler = async (req, res): Promise<void> => {
   }
 };
 
+
+// ─── Standalone Receipt Upload Endpoint ─────────────────────────────────
+export const uploadReceiptOnly: RequestHandler = async (req, res): Promise<void> => {
+  try {
+    const authReq = req as AuthRequestWithFiles;
+    if (!authReq.user) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const receiptFile = req.file || authReq.files?.receipt?.[0];
+    if (!receiptFile) {
+      res.status(400).json({ error: 'No receipt file uploaded.' });
+      return;
+    }
+
+    const verdict = validateUploadedFiles({ thumbnail: receiptFile });
+    if (rejectUnverifiedContent(verdict, res)) return;
+
+    const receiptPath = getBunnyPath(
+      receiptFile,
+      'receipts',
+      verdict.ok ? verdict.fields.thumbnail : undefined,
+    );
+    const receiptUrl = await uploadToBunny(receiptFile, receiptPath);
+
+    res.status(200).json({
+      success: true,
+      url: receiptUrl,
+      filename: path.basename(receiptPath),
+    });
+  } catch (error: any) {
+    logger.error('Receipt upload error:', error);
+    res.status(500).json({ error: error.message || 'Failed to upload receipt' });
+  } finally {
+    cleanupMultipartFiles(req);
+  }
+};
+
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
 router.post('/video-ticket', authMiddleware, checkTeacherApproval, uploadRateLimit, getUploadTicket);
+router.post('/receipt', authMiddleware, uploadRateLimit, upload.single('receipt'), uploadReceiptOnly);
 router.post('/thumbnail', authMiddleware, checkTeacherApproval, uploadRateLimit, upload.single('thumbnail'), uploadThumbnailOnly);
 router.post('/pdf', authMiddleware, checkTeacherApproval, uploadRateLimit, upload.single('pdf'), uploadPdfOnly);
 router.post('/video', authMiddleware, checkTeacherApproval, uploadRateLimit, upload.single('video'), uploadVideoOnly);

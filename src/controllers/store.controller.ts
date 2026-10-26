@@ -207,13 +207,12 @@ export const submitCheckout: RequestHandler = async (req, res): Promise<void> =>
     }
 
     const amountMinor = course.priceMinor > 0 ? course.priceMinor : Math.round(course.price * 100);
-    if (amountMinor > 0) {
-      res.status(410).json({
-        error: 'Manual receipts are no longer accepted. Start a hosted payment intention.',
-        code: 'USE_PAYMENT_INTENTION',
-      });
-      return;
-    }
+    const isFree = amountMinor === 0;
+
+    const { paymentMethod, receiptImageUrl } = req.body as {
+      paymentMethod?: string;
+      receiptImageUrl?: string;
+    };
 
     const existing = await prisma.courseEnrollment.findUnique({
       where: { studentId_courseId: { studentId: authUser.id, courseId } },
@@ -223,29 +222,65 @@ export const submitCheckout: RequestHandler = async (req, res): Promise<void> =>
       return;
     }
 
+    if (isFree) {
+      const enrollment = await prisma.courseEnrollment.upsert({
+        where: { studentId_courseId: { studentId: authUser.id, courseId } },
+        create: {
+          studentId: authUser.id,
+          courseId,
+          paymentMethod: 'FREE',
+          status: 'APPROVED',
+        },
+        update: { paymentMethod: 'FREE', receiptImageUrl: null, status: 'APPROVED' },
+      });
+      await prisma.courseEntitlement.upsert({
+        where: { studentId_courseId: { studentId: authUser.id, courseId } },
+        create: { studentId: authUser.id, courseId, status: 'ACTIVE' },
+        update: { status: 'ACTIVE', revokedAt: null },
+      });
+
+      logger.info('Free enrollment granted', { studentId: authUser.id, courseId });
+      res.status(201).json({
+        message: 'تم الاشتراك المجاني بنجاح! يمكنك الآن الوصول إلى جميع الدروس',
+        enrollmentId: enrollment.id,
+        status: enrollment.status,
+        autoApproved: true,
+      });
+      return;
+    }
+
+    // Manual Wallet / InstaPay receipt checkout
+    const resolvedMethod = (paymentMethod || 'VODAFONE_CASH').toUpperCase();
     const enrollment = await prisma.courseEnrollment.upsert({
       where: { studentId_courseId: { studentId: authUser.id, courseId } },
       create: {
         studentId: authUser.id,
         courseId,
-        paymentMethod: 'FREE',
-        status: 'APPROVED',
+        paymentMethod: resolvedMethod,
+        receiptImageUrl: receiptImageUrl || null,
+        status: 'PENDING',
       },
-      update: { paymentMethod: 'FREE', receiptImageUrl: null, status: 'APPROVED' },
-    });
-    await prisma.courseEntitlement.upsert({
-      where: { studentId_courseId: { studentId: authUser.id, courseId } },
-      create: { studentId: authUser.id, courseId, status: 'ACTIVE' },
-      update: { status: 'ACTIVE', revokedAt: null },
+      update: {
+        paymentMethod: resolvedMethod,
+        receiptImageUrl: receiptImageUrl || null,
+        status: 'PENDING',
+      },
     });
 
-    logger.info('Free enrollment granted', { studentId: authUser.id, courseId });
-    res.status(201).json({
-      message: 'تم الاشتراك المجاني بنجاح! يمكنك الآن الوصول إلى جميع الدروس',
-      enrollmentId: enrollment.id,
-      status: enrollment.status,
-      autoApproved: true,
+    logger.info('Pending enrollment submitted with receipt', {
+      studentId: authUser.id,
+      courseId,
+      method: resolvedMethod,
+      receiptImageUrl,
     });
+
+    res.status(201).json({
+      message: 'تم إرسال إيصال التحويل بنجاح! جاري المراجعة وتفعيل الكورس.',
+      enrollmentId: enrollment.id,
+      status: 'PENDING',
+      autoApproved: false,
+    });
+    return;
   } catch (error) {
     logger.error('submitCheckout error:', error);
     res.status(500).json({ error: 'Failed to submit checkout' });

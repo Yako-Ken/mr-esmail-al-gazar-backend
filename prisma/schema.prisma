@@ -67,6 +67,7 @@ model User {
   supportTickets   SupportTicket[]
   preferences      UserPreference?
   consentEvents    ConsentEvent[]
+  lessonAccesses   LessonAccess[]        @relation("StudentLessonAccess")
 }
 
 model UserSession {
@@ -198,6 +199,8 @@ model Lesson {
     quizzes       Quiz[]                @relation("LessonQuizzes")
     trackings     Tracking[]            @relation("LessonTrackings")
     progresses    LessonProgress[]      @relation("LessonProgress")
+  accessMode    String                @default("COURSE_STUDENTS")
+  allowedStudents LessonAccess[]      @relation("LessonAllowedStudents")
   }
 
 model Quiz {
@@ -479,4 +482,18 @@ model AdminAuditEvent {
 
   @@index([category, createdAt])
   @@index([createdAt])
+}
+
+
+model LessonAccess {
+  id        String   @id @default(uuid())
+  studentId String
+  lessonId  String
+  student   User     @relation("StudentLessonAccess", fields: [studentId], references: [id], onDelete: Cascade)
+  lesson    Lesson   @relation("LessonAllowedStudents", fields: [lessonId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([studentId, lessonId])
+  @@index([studentId])
+  @@index([lessonId])
 }

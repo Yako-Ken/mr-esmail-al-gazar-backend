@@ -1,9 +1,15 @@
+import {
+  getLessonAccess,
+  addStudentToLesson,
+  removeStudentFromLesson,
+  setLessonAccessMode,
+} from '../controllers/lessonAccess.controller';
 import { Router, Request, Response, RequestHandler } from 'express';
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { authMiddleware, AuthUser, isApprovedUser } from '../middlewares/auth.middleware';
 import { roleMiddleware } from '../middlewares/role.middleware';
-import { getTeacherEnrollments, updateEnrollmentStatus, enrollStudentByTeacher } from '../controllers/enrollment.controller';
+import { getTeacherEnrollments, updateEnrollmentStatus, enrollStudentByTeacher, getPendingPayments, getPaymentHistory, approvePayment, rejectPayment } from '../controllers/enrollment.controller';
 import { getTeacherStudents, removeStudentEnrollment, getTeacherCoursesForGrading, getCourseAssignments, getCourseQuizzes, getAssignmentSubmissions, updateSubmissionStatus, getHomeworkRegister, gradeHomework, returnHomework, startHomeworkReview } from '../controllers/student.controller';
 import { logger } from '../utils/logger';
 import { maskName } from '../utils/redact';
@@ -466,22 +472,11 @@ router.put('/enrollments/:id', authMiddleware, roleMiddleware('TEACHER', 'ASSIST
 // Webhook-driven sales. Manual receipt approval endpoints are intentionally removed.
 router.get('/payments/summary', authMiddleware, roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'), isApprovedUser, getTeacherSalesSummary);
 router.get('/payments/settlements', authMiddleware, roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'), isApprovedUser, getTeacherSettlements);
-router.all('/payments/pending', authMiddleware, (_req, res) => res.status(410).json({
-  error: 'Manual payment approvals are no longer supported.',
-  code: 'MANUAL_PAYMENTS_REMOVED',
-}));
-router.all('/payments/history', authMiddleware, (_req, res) => res.status(410).json({
-  error: 'Use /payments/summary for webhook-driven sales.',
-  code: 'MANUAL_PAYMENTS_REMOVED',
-}));
-router.all('/payments/:id/approve', authMiddleware, (_req, res) => res.status(410).json({
-  error: 'Payment state is controlled by verified provider webhooks.',
-  code: 'MANUAL_PAYMENTS_REMOVED',
-}));
-router.all('/payments/:id/reject', authMiddleware, (_req, res) => res.status(410).json({
-  error: 'Payment state is controlled by verified provider webhooks.',
-  code: 'MANUAL_PAYMENTS_REMOVED',
-}));
+// Manual Payment Approvals (Vodafone Cash / InstaPay receipts)
+router.get('/payments/pending', authMiddleware, roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'), isApprovedUser, getPendingPayments);
+router.get('/payments/history', authMiddleware, roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'), isApprovedUser, getPaymentHistory);
+router.post('/payments/:id/approve', authMiddleware, roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'), isApprovedUser, approvePayment);
+router.post('/payments/:id/reject', authMiddleware, roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'), isApprovedUser, rejectPayment);
 
 // Student management
 router.get('/students', authMiddleware, roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'), isApprovedUser, getTeacherStudents);
@@ -527,5 +522,12 @@ router.post(
   isApprovedUser,
   startHomeworkReview,
 );
+
+
+// Lesson video granular access control
+router.get('/lessons/:id/access', authMiddleware, roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'), isApprovedUser, getLessonAccess);
+router.post('/lessons/:id/access', authMiddleware, roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'), isApprovedUser, addStudentToLesson);
+router.delete('/lessons/:id/access/:studentId', authMiddleware, roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'), isApprovedUser, removeStudentFromLesson);
+router.put('/lessons/:id/access-mode', authMiddleware, roleMiddleware('TEACHER', 'ASSISTANT', 'SUPER_ADMIN'), isApprovedUser, setLessonAccessMode);
 
 export default router;
